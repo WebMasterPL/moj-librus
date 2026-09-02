@@ -43,6 +43,12 @@ struct MoreView: View {
                         .badge(repo.homework.count)
                 }
                 NavigationLink {
+                    NotesView()
+                } label: {
+                    Label("Uwagi", systemImage: "note.text")
+                        .badge(repo.notes.count)
+                }
+                NavigationLink {
                     MessagesView()
                 } label: {
                     Label("Wiadomości", systemImage: "envelope.fill")

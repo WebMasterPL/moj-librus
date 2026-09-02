@@ -26,6 +26,13 @@ struct DashboardView: View {
                     }
                 }
 
+                if let className = repo.schoolYear.className {
+                    Text("Klasa \(className) · semestr \(repo.currentSemester)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 luckyNumberCard
                 nextLessonsCard
                 recentGradesCard

@@ -33,14 +33,25 @@ struct SubjectGrades: Identifiable, Codable, Hashable {
     let subjectName: String
     var grades: [GradeItem]
 
-    var semesterGrades: [GradeItem] { grades.filter { $0.kind == .normal } }
-
-    var average: Double? {
-        GradeMath.weightedAverage(semesterGrades)
+    func filtered(_ filter: SemesterFilter, current: Int) -> [GradeItem] {
+        grades.filter { filter.matches($0.semester, current: current) }
     }
 
-    var proposedFinal: GradeItem? { grades.first { $0.kind == .yearProposed || $0.kind == .semesterProposed } }
-    var final: GradeItem? { grades.first { $0.kind == .yearFinal || $0.kind == .semesterFinal } }
+    func normalGrades(_ filter: SemesterFilter, current: Int) -> [GradeItem] {
+        filtered(filter, current: current).filter { $0.kind == .normal }
+    }
+
+    func average(_ filter: SemesterFilter, current: Int) -> Double? {
+        GradeMath.weightedAverage(normalGrades(filter, current: current))
+    }
+
+    func proposedFinal(_ filter: SemesterFilter, current: Int) -> GradeItem? {
+        filtered(filter, current: current).first { $0.kind == .yearProposed || $0.kind == .semesterProposed }
+    }
+
+    func finalGrade(_ filter: SemesterFilter, current: Int) -> GradeItem? {
+        filtered(filter, current: current).first { $0.kind == .yearFinal || $0.kind == .semesterFinal }
+    }
 }
 
 // MARK: - Timetable
@@ -139,6 +150,59 @@ struct HomeworkItem: Identifiable, Codable, Hashable {
 struct LuckyNumberInfo: Codable, Hashable {
     let number: Int
     let day: Date?
+}
+
+// MARK: - Behaviour notes (uwagi)
+
+struct NoteItem: Identifiable, Codable, Hashable {
+    enum Kind: String, Codable { case positive, negative, neutral }
+    let id: Int
+    let text: String
+    let category: String?
+    let teacher: String?
+    let date: Date?
+    let kind: Kind
+}
+
+// MARK: - School year / semester
+
+struct SchoolYearInfo: Codable, Hashable {
+    var className: String? = nil
+    var tutor: String? = nil
+    var yearStart: Date? = nil
+    var secondSemesterStart: Date? = nil
+    var yearEnd: Date? = nil
+
+    /// Semester that contains `date`, using the real Librus boundary when known.
+    func semester(on date: Date = Date()) -> Int {
+        guard let boundary = secondSemesterStart else {
+            // Fallback: Polish school year — Feb..Aug ≈ semester 2.
+            let month = LibrusDate.calendar.component(.month, from: date)
+            return (2...8).contains(month) ? 2 : 1
+        }
+        return date < boundary ? 1 : 2
+    }
+}
+
+enum SemesterFilter: String, CaseIterable, Identifiable {
+    case current, first, second, all
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .current: return "Bieżący"
+        case .first: return "Sem. 1"
+        case .second: return "Sem. 2"
+        case .all: return "Całość"
+        }
+    }
+    func matches(_ semester: Int, current: Int) -> Bool {
+        switch self {
+        case .current: return semester == current
+        case .first: return semester == 1
+        case .second: return semester == 2
+        case .all: return true
+        }
+    }
 }
 
 // MARK: - Messages

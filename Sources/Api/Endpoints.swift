@@ -42,8 +42,10 @@ enum Librus {
         static let attendanceTypes = "Attendances/Types"
         static let luckyNumber = "LuckyNumbers"
         static let schoolNotices = "SchoolNotices"
-        static let homeworks = "HomeWorks"
-        static let homeworkCategories = "HomeWorks/Categories"
+        static let homeworks = "HomeWorkAssignments"
+        static let classes = "Classes"
+        static let notes = "Notes"
+        static let noteCategories = "Notes/Categories"
         static let autoLoginToken = "AutoLoginToken"
         static func timetable(weekStart: String) -> String { "Timetables?weekStart=\(weekStart)" }
     }

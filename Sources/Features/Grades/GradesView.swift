@@ -2,9 +2,21 @@ import SwiftUI
 
 struct GradesView: View {
     @Environment(DataRepository.self) private var repo
+    @State private var filter: SemesterFilter = .current
+
+    private var current: Int { repo.currentSemester }
+
+    private var visibleSubjects: [SubjectGrades] {
+        repo.subjectGrades
+            .map { subject -> (SubjectGrades, [GradeItem]) in
+                (subject, subject.filtered(filter, current: current))
+            }
+            .filter { !$0.1.isEmpty }
+            .map { $0.0 }
+    }
 
     private var overallAverage: Double? {
-        let averages = repo.subjectGrades.compactMap(\.average)
+        let averages = visibleSubjects.compactMap { $0.average(filter, current: current) }
         guard !averages.isEmpty else { return nil }
         return averages.reduce(0, +) / Double(averages.count)
     }
@@ -15,35 +27,40 @@ struct GradesView: View {
                 Section { ErrorBanner(message: error) { Task { await repo.refreshCore() } } }
             }
 
-            if let avg = overallAverage {
-                Section {
+            Section {
+                Picker("Semestr", selection: $filter) {
+                    ForEach(SemesterFilter.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+
+                if let avg = overallAverage {
                     HStack {
                         Text("Średnia ze średnich przedmiotów")
                         Spacer()
-                        Text(GradeMath.format(avg)).font(.headline)
+                        Text(GradeMath.format(avg))
+                            .font(.headline)
+                            .foregroundStyle(gradeColor(for: avg))
                     }
                 }
             }
 
-            if repo.subjectGrades.isEmpty {
+            if visibleSubjects.isEmpty {
                 Section {
                     EmptyStateView(systemImage: "checkmark.seal", title: "Brak ocen",
-                                   message: "Pociągnij w dół, aby odświeżyć.")
+                                   message: "Zmień semestr lub pociągnij w dół, aby odświeżyć.")
                 }
             }
 
-            ForEach(repo.subjectGrades) { subject in
+            ForEach(visibleSubjects) { subject in
                 Section {
-                    ForEach(subject.grades) { grade in
-                        NavigationLink(value: grade) {
-                            GradeRow(grade: grade)
-                        }
+                    ForEach(subject.filtered(filter, current: current)) { grade in
+                        NavigationLink(value: grade) { GradeRow(grade: grade) }
                     }
                 } header: {
                     HStack {
                         Text(subject.subjectName)
                         Spacer()
-                        if let avg = subject.average {
+                        if let avg = subject.average(filter, current: current) {
                             Text("śr. \(GradeMath.format(avg))")
                                 .foregroundStyle(gradeColor(for: avg))
                         }
@@ -67,7 +84,7 @@ struct GradeRow: View {
                 .foregroundStyle(gradeColor(for: grade.value))
                 .frame(minWidth: 38)
             VStack(alignment: .leading, spacing: 2) {
-                Text(grade.categoryName.isEmpty ? label(for: grade.kind) : grade.categoryName)
+                Text(grade.categoryName.isEmpty ? Self.label(for: grade.kind) : grade.categoryName)
                     .font(.callout)
                 HStack(spacing: 8) {
                     if grade.weight > 0 {
@@ -84,7 +101,7 @@ struct GradeRow: View {
         }
     }
 
-    private func label(for kind: GradeKind) -> String {
+    static func label(for kind: GradeKind) -> String {
         switch kind {
         case .normal: return "Ocena"
         case .semesterProposed: return "Propozycja śródroczna"
@@ -112,6 +129,7 @@ struct GradeDetailView: View {
                 }
                 if grade.weight > 0 { row("Waga", GradeMath.format(grade.weight)) }
                 row("Liczona do średniej", grade.countsToAverage ? "Tak" : "Nie")
+                row("Rodzaj", GradeRow.label(for: grade.kind))
             }
             Section {
                 row("Przedmiot", grade.subjectName)

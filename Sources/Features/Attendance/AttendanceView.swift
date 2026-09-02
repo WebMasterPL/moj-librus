@@ -2,32 +2,52 @@ import SwiftUI
 
 struct AttendanceView: View {
     @Environment(DataRepository.self) private var repo
+    @State private var filter: SemesterFilter = .current
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
+
+    private var items: [AttendanceItem] {
+        repo.attendanceItems.filter { filter.matches($0.semester ?? repo.currentSemester, current: repo.currentSemester) }
+    }
+
+    private var summary: AttendanceSummary {
+        var s = AttendanceSummary()
+        for item in items { s.counts[item.kind, default: 0] += 1 }
+        return s
+    }
 
     var body: some View {
         List {
             Section {
+                Picker("Semestr", selection: $filter) {
+                    ForEach(SemesterFilter.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
+            }
+
+            Section {
                 LazyVGrid(columns: columns, spacing: 12) {
                     statTile("Frekwencja",
-                             value: repo.attendanceSummary.attendancePercent.map { String(format: "%.0f%%", $0) } ?? "—",
+                             value: summary.attendancePercent.map { String(format: "%.0f%%", $0) } ?? "—",
                              color: .green)
-                    statTile("Nieobecności", value: "\(repo.attendanceSummary.absent)", color: .red)
-                    statTile("Usprawiedliwione", value: "\(repo.attendanceSummary.absentExcused)", color: .orange)
-                    statTile("Spóźnienia", value: "\(repo.attendanceSummary.belated)", color: .yellow)
+                    statTile("Nieobecności", value: "\(summary.absent)", color: .red)
+                    statTile("Usprawiedliwione", value: "\(summary.absentExcused)", color: .orange)
+                    statTile("Spóźnienia", value: "\(summary.belated)", color: .yellow)
                 }
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
             }
 
-            if repo.attendanceItems.isEmpty {
+            if items.isEmpty {
                 Section {
                     EmptyStateView(systemImage: "person.crop.circle.badge.checkmark",
                                    title: "Brak wpisów frekwencji")
                 }
             } else {
                 Section("Wpisy") {
-                    ForEach(repo.attendanceItems) { item in
+                    ForEach(items) { item in
                         HStack(spacing: 12) {
                             Text(item.typeShort)
                                 .font(.caption.bold())

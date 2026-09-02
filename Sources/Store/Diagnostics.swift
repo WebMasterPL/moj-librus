@@ -1,0 +1,76 @@
+import Foundation
+
+struct DiagnosticResult: Identifiable {
+    let id = UUID()
+    let name: String
+    let ok: Bool
+    let detail: String
+}
+
+/// Hits every endpoint independently and reports OK / error text.
+/// Useful for remote debugging: the user can copy the report and send it over.
+struct Diagnostics {
+    let session: LibrusSession
+
+    func run() async -> [DiagnosticResult] {
+        let checks: [(String, String)] = [
+            ("Me", Librus.Path.me),
+            ("Subjects", Librus.Path.subjects),
+            ("Users", Librus.Path.users),
+            ("Classes", Librus.Path.classes),
+            ("Classrooms", Librus.Path.classrooms),
+            ("Grades", Librus.Path.grades),
+            ("Grades/Categories", Librus.Path.gradeCategories),
+            ("Timetables", Librus.Path.timetable(weekStart: LibrusDate.ymdString(LibrusDate.weekStart()))),
+            ("Attendances", Librus.Path.attendances),
+            ("Attendances/Types", Librus.Path.attendanceTypes),
+            ("Lessons", Librus.Path.lessons),
+            ("LuckyNumbers", Librus.Path.luckyNumber),
+            ("SchoolNotices", Librus.Path.schoolNotices),
+            ("HomeWorkAssignments", Librus.Path.homeworks),
+            ("Notes", Librus.Path.notes),
+        ]
+
+        var results: [DiagnosticResult] = []
+        for (name, path) in checks {
+            results.append(await check(name: name, path: path))
+        }
+        results.append(await checkMessages())
+        return results
+    }
+
+    private func check(name: String, path: String) async -> DiagnosticResult {
+        do {
+            let data = try await session.authorizedData(path: path)
+            let bytes = data.count
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let keys = obj.keys.sorted().prefix(3).joined(separator: ", ")
+                return DiagnosticResult(name: name, ok: true, detail: "\(bytes) B · klucze: \(keys)")
+            }
+            return DiagnosticResult(name: name, ok: true, detail: "\(bytes) B")
+        } catch {
+            let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            return DiagnosticResult(name: name, ok: false, detail: msg)
+        }
+    }
+
+    private func checkMessages() async -> DiagnosticResult {
+        let client = MessagesClient(session: session)
+        do {
+            let list = try await client.inbox()
+            return DiagnosticResult(name: "Wiadomości (mostek)", ok: true,
+                                    detail: "\(list.count) wiadomości w skrzynce")
+        } catch {
+            let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            return DiagnosticResult(name: "Wiadomości (mostek)", ok: false, detail: msg)
+        }
+    }
+
+    static func report(_ results: [DiagnosticResult]) -> String {
+        var lines = ["Mój Librus — diagnostyka \(Date().formattedPL("yyyy-MM-dd HH:mm"))"]
+        for r in results {
+            lines.append("\(r.ok ? "OK  " : "BŁĄD") \(r.name) — \(r.detail)")
+        }
+        return lines.joined(separator: "\n")
+    }
+}

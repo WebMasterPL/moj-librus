@@ -16,9 +16,16 @@ struct SettingsView: View {
         List {
             Section("Konto") {
                 LabeledContent("Uczeń", value: repo.studentName.isEmpty ? "—" : repo.studentName)
+                if let className = repo.schoolYear.className {
+                    LabeledContent("Klasa", value: className)
+                }
+                if let tutor = repo.schoolYear.tutor {
+                    LabeledContent("Wychowawca", value: tutor)
+                }
                 if let login = currentLogin {
                     LabeledContent("Login", value: login)
                 }
+                LabeledContent("Bieżący semestr", value: "\(repo.currentSemester)")
                 if let sync = repo.lastSync {
                     LabeledContent("Ostatnia synchronizacja", value: sync.formattedPL("d MMM yyyy, HH:mm"))
                 }
@@ -32,6 +39,11 @@ struct SettingsView: View {
                     }
                 } label: {
                     Label("Odśwież wszystko", systemImage: "arrow.clockwise")
+                }
+                NavigationLink {
+                    DiagnosticsView()
+                } label: {
+                    Label("Diagnostyka połączenia", systemImage: "stethoscope")
                 }
             }
 

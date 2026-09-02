@@ -12,7 +12,7 @@ final class DataRepository {
 
     // Published state -------------------------------------------------------
     var studentName: String = ""
-    var schoolYearSemester: Int = 1
+    var schoolYear = SchoolYearInfo()
 
     var luckyNumber: LuckyNumberInfo?
     var subjectGrades: [SubjectGrades] = []
@@ -20,7 +20,10 @@ final class DataRepository {
     var attendanceItems: [AttendanceItem] = []
     var announcements: [AnnouncementItem] = []
     var homework: [HomeworkItem] = []
+    var notes: [NoteItem] = []
     var messagesInbox: [MessageItem] = []
+
+    var currentSemester: Int { schoolYear.semester() }
 
     /// week-start (yyyy-MM-dd) -> day list
     var timetableWeeks: [String: [TimetableDay]] = [:]
@@ -44,13 +47,14 @@ final class DataRepository {
 
     private struct Snapshot: Codable {
         var studentName: String
-        var semester: Int
+        var schoolYear: SchoolYearInfo
         var lucky: LuckyNumberInfo?
         var subjectGrades: [SubjectGrades]
         var attendanceSummary: AttendanceSummary
         var attendanceItems: [AttendanceItem]
         var announcements: [AnnouncementItem]
         var homework: [HomeworkItem]
+        var notes: [NoteItem]
         var messagesInbox: [MessageItem]
         var lastSync: Date?
         var readAnnouncementIDs: [String]
@@ -59,13 +63,14 @@ final class DataRepository {
     private func loadCache() {
         guard let s = Cache.load(Snapshot.self, from: "snapshot") else { return }
         studentName = s.studentName
-        schoolYearSemester = s.semester
+        schoolYear = s.schoolYear
         luckyNumber = s.lucky
         subjectGrades = s.subjectGrades
         attendanceSummary = s.attendanceSummary
         attendanceItems = s.attendanceItems
         announcements = s.announcements
         homework = s.homework
+        notes = s.notes
         messagesInbox = s.messagesInbox
         lastSync = s.lastSync
         readAnnouncementIDs = Set(s.readAnnouncementIDs)
@@ -76,10 +81,10 @@ final class DataRepository {
 
     private func saveCache() {
         let snap = Snapshot(
-            studentName: studentName, semester: schoolYearSemester, lucky: luckyNumber,
+            studentName: studentName, schoolYear: schoolYear, lucky: luckyNumber,
             subjectGrades: subjectGrades, attendanceSummary: attendanceSummary,
             attendanceItems: attendanceItems, announcements: announcements,
-            homework: homework, messagesInbox: messagesInbox, lastSync: lastSync,
+            homework: homework, notes: notes, messagesInbox: messagesInbox, lastSync: lastSync,
             readAnnouncementIDs: Array(readAnnouncementIDs)
         )
         Cache.save(snap, as: "snapshot")
@@ -88,9 +93,9 @@ final class DataRepository {
 
     func clearLocal() {
         Cache.clearAll()
-        studentName = ""; luckyNumber = nil; subjectGrades = []
+        studentName = ""; schoolYear = .init(); luckyNumber = nil; subjectGrades = []
         attendanceSummary = .init(); attendanceItems = []
-        announcements = []; homework = []; messagesInbox = []
+        announcements = []; homework = []; notes = []; messagesInbox = []
         timetableWeeks = [:]; lastSync = nil
     }
 
@@ -117,6 +122,9 @@ final class DataRepository {
             async let luckyT = api.luckyNumber()
             async let announcementsT = api.announcements()
             async let homeworkT = api.homework()
+            async let classesT = api.classes()
+            async let notesT = api.notes()
+            async let noteCategoriesT = api.noteCategories()
 
             let me = try await meT
             let subjects = try await subjectsT
@@ -131,6 +139,9 @@ final class DataRepository {
             let lucky = await luckyT
             let anns = await announcementsT
             let hw = await homeworkT
+            let studentClass = await classesT
+            let rawNotes = await notesT
+            let noteCats = await noteCategoriesT
 
             let subjectByID = Dictionary(subjects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let userByID = Dictionary(users.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -140,6 +151,29 @@ final class DataRepository {
             let attTypeByID = Dictionary(attTypes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
             studentName = me.displayName
+
+            // --- School year / class ---
+            if let sc = studentClass {
+                schoolYear = SchoolYearInfo(
+                    className: sc.name.isEmpty ? nil : sc.name,
+                    tutor: sc.classTutor.flatMap { userByID[$0.id]?.displayName },
+                    yearStart: LibrusDate.fromYMD(sc.beginSchoolYear),
+                    secondSemesterStart: LibrusDate.fromYMD(sc.endFirstSemester),
+                    yearEnd: LibrusDate.fromYMD(sc.endSchoolYear)
+                )
+            }
+
+            // --- Behaviour notes (uwagi) ---
+            let noteCatByID = Dictionary(noteCats.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            notes = rawNotes.map { n in
+                NoteItem(
+                    id: n.id, text: n.text,
+                    category: n.category.flatMap { noteCatByID[$0.id]?.name },
+                    teacher: n.teacher.flatMap { userByID[$0.id]?.displayName },
+                    date: LibrusDate.fromYMD(n.date),
+                    kind: n.positive == 1 ? .positive : (n.positive == 0 ? .negative : .neutral)
+                )
+            }.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
 
             // --- Grades ---
             subjectGrades = Self.joinGrades(

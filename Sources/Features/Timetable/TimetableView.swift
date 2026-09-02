@@ -24,11 +24,22 @@ struct TimetableView: View {
             } else {
                 List {
                     ForEach(days) { day in
-                        Section(day.date.weekdayName.capitalized + " · " + day.date.dayMonthShort) {
+                        Section {
                             if day.entries.isEmpty {
                                 Text("Brak lekcji").foregroundStyle(.secondary)
                             } else {
                                 ForEach(day.entries) { LessonRow(entry: $0) }
+                            }
+                        } header: {
+                            HStack {
+                                Text(day.date.weekdayName.capitalized + " · " + day.date.dayMonthShort)
+                                if LibrusDate.isSameDay(day.date, Date()) {
+                                    Text("dziś")
+                                        .font(.caption2.bold())
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background(.tint, in: Capsule())
+                                        .foregroundStyle(.white)
+                                }
                             }
                         }
                     }
@@ -37,6 +48,12 @@ struct TimetableView: View {
         }
         .navigationTitle("Plan lekcji")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Dziś") { weekStart = LibrusDate.weekStart() }
+                    .disabled(LibrusDate.isSameDay(weekStart, LibrusDate.weekStart()))
+            }
+        }
         .task(id: weekKey) { await loadIfNeeded() }
         .refreshable { await load() }
     }

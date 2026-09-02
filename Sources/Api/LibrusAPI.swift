@@ -75,6 +75,18 @@ struct LibrusAPI {
         await getOptional(Librus.Path.homeworks, as: RawHomeworkResponse.self)?.items ?? []
     }
 
+    func classes() async -> RawStudentClass? {
+        await getOptional(Librus.Path.classes, as: RawClassesResponse.self)?.studentClass
+    }
+
+    func notes() async -> [RawNote] {
+        await getOptional(Librus.Path.notes, as: RawNotesResponse.self)?.notes ?? []
+    }
+
+    func noteCategories() async -> [RawNoteCategory] {
+        await getOptional(Librus.Path.noteCategories, as: RawNoteCategoriesResponse.self)?.categories ?? []
+    }
+
     func timetable(weekStart: Date) async throws -> [String: [[RawLesson]]] {
         let path = Librus.Path.timetable(weekStart: LibrusDate.ymdString(weekStart))
         return try await get(path, as: RawTimetableResponse.self).days
