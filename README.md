@@ -2,7 +2,9 @@
 
 Prywatna aplikacja iOS (SwiftUI) do dziennika **Librus Synergia** — na własny użytek.
 Wzorowana funkcjonalnie na [szkolny.eu](https://szkolny.eu), ale obsługuje **wyłącznie
-Librusa** i loguje się bezpośrednio kontem **Synergia** (login typu `1234567u` + hasło).
+Librusa**. Logowanie przez **portal.librus.pl** (tak jak oficjalna apka „Synergia Dru2") —
+loginem Synergia (`1234567u`) lub e-mailem LIBRUS. Bezpośredni login `api.librus.pl`
+(`grant_type=password`) Librus wyłączył w 2026, więc jedyna działająca droga to Portal OAuth.
 
 Nie potrzebujesz Maca ani Xcode: aplikację buduje **GitHub Actions**, a instalujesz ją
 przez **SideStore/AltStore** darmowym Apple ID.
@@ -21,6 +23,7 @@ przez **SideStore/AltStore** darmowym Apple ID.
 | Uwagi | `.../2.0/Notes` |
 | Szczęśliwy numerek | `.../2.0/LuckyNumbers` |
 | Wiadomości — odczyt **i odpowiadanie** (*best-effort*) | mostek `synergia.librus.pl` → `wiadomosci.librus.pl` |
+| Logowanie | `portal.librus.pl` OAuth → `api/v3/SynergiaAccounts` → Bearer per konto |
 | Ustawienia → **Diagnostyka połączenia** — test każdego endpointu + kopiuj raport | — |
 | Powiadomienia o nowych ocenach (opcjonalne, *eksperymentalne*) | `BGAppRefreshTask` |
 
@@ -81,9 +84,11 @@ Domyślnie: nazwa **„Mój Librus"**, bundle ID `com.olekd.mojlibrus`. Aby zmie
 ## Problemy
 
 - **Coś nie działa?** Ustawienia → **Diagnostyka połączenia** → *Uruchom test* → *Kopiuj
-  raport*. Wyślij raport — pokazuje, który endpoint zawodzi i z jakim błędem.
-- **`librus_captcha_needed` przy logowaniu** — Librus rzadko wymaga captchy. Zaloguj się
-  raz przez przeglądarkę na `synergia.librus.pl`, poczekaj kilka minut i spróbuj ponownie.
+  raport*. Wyświetla osobno „Logowanie (Portal → Synergia)" i każdy endpoint.
+- **Captcha przy logowaniu** — portal rzadko wymaga captchy z IP telefonu. Zaloguj się raz
+  przez przeglądarkę na `portal.librus.pl`, poczekaj kilka minut i spróbuj ponownie w apce.
+- **„Portal nie zwrócił żadnego konta Synergia"** — konto musi być połączone na
+  `portal.librus.pl` (zakładka *Twoje konta*). Nowe konta LIBRUS mają to automatycznie.
 - **„Nie udało się zalogować do skrzynki wiadomości"** — mostek do `wiadomosci.librus.pl`
   jest najbardziej kruchą częścią (osobna sesja, XML). Reszta aplikacji działa niezależnie.
   Jeśli błąd się powtarza, zgłoś zawartość — trzeba dostroić nazwy pól XML.
