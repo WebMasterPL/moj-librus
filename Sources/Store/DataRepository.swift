@@ -104,6 +104,7 @@ final class DataRepository {
 
         do {
             // Dictionaries + primary data, fetched concurrently.
+            let api = self.api
             async let meT = api.me()
             async let subjectsT = api.subjects()
             async let usersT = api.users()

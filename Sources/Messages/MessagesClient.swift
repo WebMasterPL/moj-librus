@@ -95,9 +95,10 @@ actor MessagesClient {
         var request = URLRequest(url: url)
         request.setValue(Librus.browserUserAgent, forHTTPHeaderField: "User-Agent")
 
-        let (_, response): (Data, URLResponse)
+        let response: URLResponse
         do {
-            (_, response) = try await http.data(for: request)
+            let (_, resp) = try await http.data(for: request)
+            response = resp
         } catch {
             throw APIError.messageBridgeFailed(error.localizedDescription)
         }
