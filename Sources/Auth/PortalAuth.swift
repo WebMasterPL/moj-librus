@@ -38,8 +38,10 @@ actor PortalAuth {
     private var http: URLSession = PortalAuth.makeSession()
 
     private static func makeSession() -> URLSession {
+        // Ephemeral sessions get their own isolated in-memory cookie jar — using
+        // that (rather than a hand-made HTTPCookieStorage) is what actually persists
+        // the Laravel session cookie across the redirect chain.
         let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = HTTPCookieStorage()
         config.httpCookieAcceptPolicy = .always
         config.httpShouldSetCookies = true
         config.httpShouldUsePipelining = false
@@ -49,10 +51,18 @@ actor PortalAuth {
     }
 
     private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
+        // Return the redirect request unchanged for http(s) hops so cookies + the
+        // session flow, but stop at the `app://` hop (URLSession can't open it).
         func urlSession(_ session: URLSession, task: URLSessionTask,
                         willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest) async -> URLRequest? {
-            nil
+            if let scheme = request.url?.scheme, scheme != "http", scheme != "https" {
+                return nil
+            }
+            if request.url?.absoluteString.contains("code=") == true {
+                return nil
+            }
+            return request
         }
     }
 
@@ -105,118 +115,79 @@ actor PortalAuth {
         http.invalidateAndCancel()
         http = PortalAuth.makeSession() // clean cookie jar for this attempt
 
-        // 1. Walk the redirect chain from the authorize URL to the login page.
-        var url = Librus.portalAuthorizeURL
-        var loginHTML: String?
-        var trail = "→ redirect/dru"
+        // 1. Load the login page (URLSession auto-follows redirect/dru → login).
+        let (pageData, pageResponse) = try await send(
+            Librus.portalAuthorizeURL, method: "GET",
+            headers: ["X-Requested-With": Librus.portalRequestedWith])
 
-        for _ in 0..<15 {
-            let (data, response) = try await send(url, method: "GET",
-                headers: ["X-Requested-With": Librus.portalRequestedWith])
-            trail += " [\(response.statusCode)]"
-
-            if let location = response.value(forHTTPHeaderField: "Location") {
-                if let code = codeFromLocation(location) { return code }
-                if location.contains("rejected_client") {
-                    throw APIError.librus(code: "rejected_client", message: "Portal odrzucił klienta OAuth.")
-                }
-                url = absoluteURL(location, relativeTo: url)
-                trail += " → " + shortPath(url)
-                continue
-            }
-
-            let html = String(data: data, encoding: .utf8) ?? ""
-            if html.contains("konto-librus/login/action") || html.contains("id=\"login\"") {
-                loginHTML = html
-                break
-            }
-            throw APIError.librus(code: "portal_flow",
-                message: "Nieoczekiwana strona portalu przed logowaniem (\(trail), \(data.count) B).")
+        if let code = codeFromLocation(pageResponse.value(forHTTPHeaderField: "Location") ?? "") {
+            return code // already authenticated somehow
         }
+        let loginHTML = String(data: pageData, encoding: .utf8) ?? ""
+        let landed = (pageResponse.url?.absoluteString ?? "").replacingOccurrences(
+            of: "https://portal.librus.pl", with: "")
 
-        guard let loginHTML else {
+        guard loginHTML.contains("konto-librus/login/action") || loginHTML.contains("id=\"login\"") else {
             throw APIError.librus(code: "portal_flow",
-                message: "Nie znaleziono formularza logowania portalu (\(trail)).")
+                message: "Nie dotarłem do formularza logowania (wylądowałem na \(landed), \(pageData.count) B).")
         }
         if loginHTML.range(of: "recaptcha|g-recaptcha|grecaptcha", options: .regularExpression) != nil {
             throw APIError.captchaNeeded
         }
 
-        // 2. Submit the login form.
+        // 2. Build + submit the login form.
         let csrf = HTTP.firstMatch("name=\"csrf-token\"\\s+content=\"([^\"]+)\"", in: loginHTML)
             ?? HTTP.firstMatch("name=\"_token\"[^>]*value=\"([^\"]+)\"", in: loginHTML)
         var form = HTTP.hiddenInputs(in: loginHTML)
         form["email"] = login
         form["password"] = password
-        if let csrf { form["_token"] = form["_token"] ?? csrf }
+        if let csrf, form["_token"] == nil { form["_token"] = csrf }
 
         var headers = [
             "X-Requested-With": Librus.portalRequestedWith,
-            "Referer": "https://portal.librus.pl/konto-librus/login",
+            "Referer": pageResponse.url?.absoluteString ?? "https://portal.librus.pl/konto-librus/login",
             "Origin": Librus.portalOrigin,
         ]
         if let csrf { headers["X-CSRF-TOKEN"] = csrf }
 
+        // URLSession follows every http(s) redirect and stops at app://…code=… .
         let (postData, postResponse) = try await send(
             Librus.portalLoginActionURL, method: "POST", headers: headers, form: form)
 
-        try assertLoginOK(data: postData, response: postResponse)
-        trail += " → POST login/action [\(postResponse.statusCode)]"
-
-        // 3. Follow redirects from the login response to the code.
-        var next = postResponse.value(forHTTPHeaderField: "Location")
-        for _ in 0..<15 {
-            guard let location = next else {
-                throw APIError.invalidCredentials
-            }
-            if let code = codeFromLocation(location) { return code }
-
-            let target = absoluteURL(location, relativeTo: Librus.portalOrigin)
-            if target.contains("/konto-librus/login") && !target.contains("/action") {
-                throw APIError.invalidCredentials
-            }
-            trail += " → " + shortPath(target)
-
-            let (data, response) = try await send(target, method: "GET",
-                headers: ["X-Requested-With": Librus.portalRequestedWith])
-            trail += " [\(response.statusCode)]"
-
-            if let loc = response.value(forHTTPHeaderField: "Location") {
-                next = loc
-                continue
-            }
-            let html = String(data: data, encoding: .utf8) ?? ""
-            if html.range(of: "recaptcha|g-recaptcha|captcha", options: [.regularExpression, .caseInsensitive]) != nil {
-                throw APIError.captchaNeeded
-            }
-            throw APIError.librus(code: "portal_flow",
-                message: "Logowanie utknęło na stronie portalu (\(trail), \(data.count) B).")
+        // The stop happens at the 302 whose Location is app://librus?code=… .
+        if let code = codeFromLocation(postResponse.value(forHTTPHeaderField: "Location") ?? "") {
+            return code
         }
-        throw APIError.librus(code: "portal_flow", message: "Za dużo przekierowań przy logowaniu (\(trail)).")
-    }
-
-    private func shortPath(_ url: String) -> String {
-        guard let comps = URLComponents(string: url) else { return url }
-        return (comps.path.isEmpty ? "/" : comps.path)
-    }
-
-    private func assertLoginOK(data: Data, response: HTTPURLResponse) throws {
-        let text = String(data: data, encoding: .utf8) ?? ""
-        let badCreds = [
-            "Upewnij się, że nie", "Podany adres e-mail jest nieprawidłowy",
-            "Nieprawidłowy login lub hasło", "nieprawidłowy login lub hasło",
-        ]
-        if badCreds.contains(where: text.contains) {
-            throw APIError.invalidCredentials
+        if let code = codeFromLocation(postResponse.url?.absoluteString ?? "") {
+            return code
         }
-        if text.contains("Sesja logowania wygasła") || response.statusCode == 419 {
-            throw APIError.librus(code: "csrf",
-                message: "Sesja logowania portalu wygasła (błąd CSRF). Spróbuj ponownie.")
-        }
-        if text.range(of: "recaptcha|g-recaptcha", options: .regularExpression) != nil {
+
+        // No code — we landed somewhere. Figure out why.
+        let finalURL = (postResponse.url?.absoluteString ?? "")
+        let body = String(data: postData, encoding: .utf8) ?? ""
+
+        if body.range(of: "recaptcha|g-recaptcha", options: .regularExpression) != nil
+            || finalURL.contains("captcha") {
             throw APIError.captchaNeeded
         }
-        // A login with no redirect and no known error is treated as a failure by the caller.
+        let badCreds = ["Upewnij się, że nie", "Podany adres e-mail jest nieprawidłowy",
+                        "nieprawidłowy login lub hasło", "Nieprawidłowe dane logowania",
+                        "Konto zostało zablokowane"]
+        if badCreds.contains(where: { body.range(of: $0, options: .caseInsensitive) != nil }) {
+            throw APIError.invalidCredentials
+        }
+        if body.contains("Sesja logowania wygasła") || postResponse.statusCode == 419 {
+            throw APIError.librus(code: "csrf", message: "Sesja portalu wygasła (CSRF). Spróbuj ponownie.")
+        }
+        if finalURL.contains("/konto-librus/login") {
+            throw APIError.invalidCredentials
+        }
+        // Something else entirely — hand over the details.
+        let snippet = body.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "  ", with: " ").prefix(160)
+        throw APIError.librus(code: "portal_flow",
+            message: "Logowanie nie dało kodu. URL: \(finalURL.replacingOccurrences(of: "https://portal.librus.pl", with: "")) "
+                + "[\(postResponse.statusCode)], \(postData.count) B. \(snippet)")
     }
 
     // MARK: - Token exchange
@@ -299,18 +270,11 @@ actor PortalAuth {
     }
 
     private func codeFromLocation(_ location: String) -> String? {
-        guard location.hasPrefix(Librus.portalRedirectURI) else { return nil }
-        guard let comps = URLComponents(string: location) else {
-            return HTTP.firstMatch("[?&]code=([^&]+)", in: location)
+        guard location.contains(Librus.portalRedirectURI) || location.contains("code=") else { return nil }
+        if let comps = URLComponents(string: location),
+           let code = comps.queryItems?.first(where: { $0.name == "code" })?.value {
+            return code
         }
-        return comps.queryItems?.first(where: { $0.name == "code" })?.value
-    }
-
-    private func absoluteURL(_ location: String, relativeTo base: String) -> String {
-        if location.hasPrefix("http://") || location.hasPrefix("https://") { return location }
-        if let baseURL = URL(string: base), let resolved = URL(string: location, relativeTo: baseURL) {
-            return resolved.absoluteString
-        }
-        return Librus.portalOrigin + (location.hasPrefix("/") ? location : "/" + location)
+        return HTTP.firstMatch("[?&]code=([^&\\s]+)", in: location)
     }
 }
