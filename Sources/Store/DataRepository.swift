@@ -33,6 +33,7 @@ final class DataRepository {
     var isRefreshing = false
     var lastError: String?
     var messagesError: String?
+    var timetableError: String?
 
     /// Set by `AppState`; invoked when a request proves the session is dead.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
@@ -46,6 +47,8 @@ final class DataRepository {
     @ObservationIgnored private var rawAttTypes: [RawAttendanceType] = []
     @ObservationIgnored private var rawNoteCats: [RawNoteCategory] = []
     @ObservationIgnored private var rawEventCats: [RawEventCategory] = []
+    /// Classroom id -> room name/number. The timetable often gives only `Classroom.Id`.
+    @ObservationIgnored private var classroomNameByID: [Int: String] = [:]
 
     /// Locally-tracked "read" state (Librus has no student-side write for these).
     private var readAnnouncementIDs: Set<String> = []
@@ -98,6 +101,7 @@ final class DataRepository {
         var lastSync: Date?
         var readAnnouncementIDs: [String]
         var readMessageIDs: [Int]?
+        var classroomNames: [Int: String]?
     }
 
     private func loadCache() {
@@ -116,6 +120,7 @@ final class DataRepository {
         lastSync = s.lastSync
         readAnnouncementIDs = Set(s.readAnnouncementIDs)
         readMessageIDs = Set(s.readMessageIDs ?? [])
+        classroomNameByID = s.classroomNames ?? [:]
         if let cachedWeeks = Cache.load([String: [TimetableDay]].self, from: "timetable") {
             timetableWeeks = cachedWeeks
         }
@@ -129,7 +134,8 @@ final class DataRepository {
             events: events, notes: notes, messagesInbox: messagesInbox,
             bellSchedule: bellSchedule, schoolName: schoolName,
             lastSync: lastSync, readAnnouncementIDs: Array(readAnnouncementIDs),
-            readMessageIDs: Array(readMessageIDs)
+            readMessageIDs: Array(readMessageIDs),
+            classroomNames: classroomNameByID
         )
         Cache.save(snap, as: "snapshot")
         Cache.save(timetableWeeks, as: "timetable")
@@ -174,6 +180,7 @@ final class DataRepository {
             async let eventsT = api.events()
             async let eventCategoriesT = api.eventCategories()
             async let schoolT = api.school()
+            async let classroomsT = api.classrooms()
 
             let me = try await meT
 
@@ -186,6 +193,11 @@ final class DataRepository {
             if let v = await attTypesT { rawAttTypes = v }
             if let v = await noteCategoriesT { rawNoteCats = v }
             if let v = await eventCategoriesT { rawEventCats = v }
+            let hadClassrooms = !classroomNameByID.isEmpty
+            if let v = await classroomsT, !v.isEmpty {
+                classroomNameByID = Dictionary(v.map { ($0.id, $0.displayName) }, uniquingKeysWith: { a, _ in a })
+            }
+            let gainedClassrooms = !hadClassrooms && !classroomNameByID.isEmpty
 
             let subjectByID = Dictionary(rawSubjects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let userByID = Dictionary(rawUsers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -272,6 +284,12 @@ final class DataRepository {
 
             lastSync = Date()
             saveCache()
+
+            // First sync that learned the classroom names: re-pull the visible week
+            // so room numbers show up without waiting for the next manual refresh.
+            if gainedClassrooms {
+                await loadTimetable(weekStart: LibrusDate.weekStart())
+            }
         } catch {
             handle(error, into: \.lastError)
         }
@@ -295,18 +313,18 @@ final class DataRepository {
             let days: [TimetableDay] = raw.keys.sorted().compactMap { dateStr in
                 guard let date = LibrusDate.fromYMD(dateStr) else { return nil }
                 let slots = raw[dateStr] ?? []
-                let entries: [TimetableEntry] = slots.flatMap { $0 }.compactMap(Self.mapLesson)
+                let entries: [TimetableEntry] = slots.flatMap { $0 }.compactMap(mapLesson)
                     .sorted { $0.lessonNo < $1.lessonNo }
                 return TimetableDay(date: date, entries: entries)
             }
             timetableWeeks[key] = days
+            timetableError = nil
             saveCache()
             SharedStore.publishTimetable(upcomingDays())
             WidgetRefresher.reload()
         } catch {
-            if timetableWeeks[key] == nil {
-                handle(error, into: \.lastError)
-            }
+            // Keep timetable failures out of the app-wide error banner.
+            handle(error, into: \.timetableError)
         }
     }
 
@@ -457,10 +475,12 @@ final class DataRepository {
         return (summary, items)
     }
 
-    private static func mapLesson(_ l: RawLesson) -> TimetableEntry? {
+    private func mapLesson(_ l: RawLesson) -> TimetableEntry? {
         guard let no = l.lessonNo, let from = l.hourFrom, let to = l.hourTo else { return nil }
-        let room = l.classroom?.name
-        let orgRoom = l.orgClassroom?.name
+        // Librus usually inlines `Classroom.Name`, but some schools return only
+        // `Classroom.Id` — fall back to the `Classrooms` lookup table then.
+        let room = roomName(l.classroom)
+        let orgRoom = roomName(l.orgClassroom)
 
         var note: String?
         if l.isCancelled {
@@ -481,6 +501,15 @@ final class DataRepository {
             isSubstitution: l.isSubstitution,
             note: note
         )
+    }
+
+    /// Room label for a timetable classroom ref: inline name first, then the
+    /// `Classrooms` lookup by id.
+    private func roomName(_ ref: NamedRef?) -> String? {
+        guard let ref else { return nil }
+        if let name = ref.name, !name.isEmpty { return name }
+        if let mapped = classroomNameByID[ref.id], !mapped.isEmpty { return mapped }
+        return nil
     }
 
     // MARK: - Widget feed

@@ -1,18 +1,17 @@
 import SwiftUI
 
 struct MainTabView: View {
-    @Environment(DataRepository.self) private var repo
-
+    // NOTE: this view's body must NOT read `repo` — otherwise every background
+    // `refreshCore()` (which mutates the repo) re-renders the whole TabView and
+    // resets each tab's NavigationStack, kicking the user out of any detail view.
+    // Badge counts are read inside the individual tab structs instead.
     var body: some View {
         TabView {
-            // Each tab's NavigationStack lives in its own view so that badge-count
-            // changes (which re-render MainTabView.body) don't reset navigation.
             DashboardTab()
                 .tabItem { Label("Pulpit", systemImage: "house.fill") }
 
             GradesTab()
                 .tabItem { Label("Oceny", systemImage: "checkmark.seal.fill") }
-                .badge(repo.unseenGradeCount)
 
             TimetableTab()
                 .tabItem { Label("Plan", systemImage: "calendar") }
@@ -22,16 +21,37 @@ struct MainTabView: View {
 
             MoreTab()
                 .tabItem { Label("Więcej", systemImage: "ellipsis.circle.fill") }
-                .badge(repo.unreadAnnouncementCount + repo.unreadMessageCount)
         }
     }
 }
 
-private struct DashboardTab: View { var body: some View { NavigationStack { DashboardView() } } }
-private struct GradesTab: View { var body: some View { NavigationStack { GradesView() } } }
-private struct TimetableTab: View { var body: some View { NavigationStack { TimetableView() } } }
-private struct AttendanceTab: View { var body: some View { NavigationStack { AttendanceView() } } }
-private struct MoreTab: View { var body: some View { NavigationStack { MoreView() } } }
+private struct DashboardTab: View {
+    var body: some View { NavigationStack { DashboardView() } }
+}
+
+private struct GradesTab: View {
+    @Environment(DataRepository.self) private var repo
+    var body: some View {
+        NavigationStack { GradesView() }
+            .badge(repo.unseenGradeCount)
+    }
+}
+
+private struct TimetableTab: View {
+    var body: some View { NavigationStack { TimetableView() } }
+}
+
+private struct AttendanceTab: View {
+    var body: some View { NavigationStack { AttendanceView() } }
+}
+
+private struct MoreTab: View {
+    @Environment(DataRepository.self) private var repo
+    var body: some View {
+        NavigationStack { MoreView() }
+            .badge(repo.unreadAnnouncementCount + repo.unreadMessageCount)
+    }
+}
 
 struct MoreView: View {
     @Environment(DataRepository.self) private var repo

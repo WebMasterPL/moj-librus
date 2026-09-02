@@ -18,6 +18,12 @@ struct TimetableView: View {
             if days.isEmpty {
                 if isLoading {
                     ProgressView().frame(maxHeight: .infinity)
+                } else if let error = repo.timetableError {
+                    VStack {
+                        ErrorBanner(message: error) { Task { await load() } }
+                            .padding(Theme.Space.lg)
+                        Spacer()
+                    }
                 } else {
                     EmptyStateView(systemImage: "calendar", title: "Brak planu",
                                    message: "Dla tego tygodnia nie ma danych.")
