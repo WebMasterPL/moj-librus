@@ -2,6 +2,10 @@ import Foundation
 
 /// Typed wrappers over `LibrusSession.authorizedData` — one method per endpoint,
 /// each returning decoded raw models. No joining happens here.
+///
+/// Only `me()` throws (a missing student is fatal). Every other call returns an
+/// optional: `nil` means "the request failed" (keep whatever we cached), while an
+/// empty array means "Librus genuinely has nothing here".
 struct LibrusAPI {
     let session: LibrusSession
 
@@ -16,9 +20,7 @@ struct LibrusAPI {
         }
     }
 
-    /// Endpoints that legitimately 404 / deny when a feature is off return nil
-    /// instead of throwing, so one disabled feature can't fail the whole sync.
-    private func getOptional<T: Decodable>(_ path: String, as type: T.Type) async -> T? {
+    private func soft<T: Decodable>(_ path: String, as type: T.Type) async -> T? {
         do { return try await get(path, as: type) }
         catch { return nil }
     }
@@ -27,64 +29,66 @@ struct LibrusAPI {
         try await get(Librus.Path.me, as: RawMeResponse.self).me
     }
 
-    func subjects() async throws -> [RawSubject] {
-        try await get(Librus.Path.subjects, as: RawSubjectsResponse.self).subjects
+    func subjects() async -> [RawSubject]? {
+        await soft(Librus.Path.subjects, as: RawSubjectsResponse.self)?.subjects
     }
 
-    func users() async throws -> [RawUser] {
-        try await get(Librus.Path.users, as: RawUsersResponse.self).users
+    func users() async -> [RawUser]? {
+        await soft(Librus.Path.users, as: RawUsersResponse.self)?.users
     }
 
-    func classrooms() async -> [RawClassroom] {
-        await getOptional(Librus.Path.classrooms, as: RawClassroomsResponse.self)?.classrooms ?? []
+    func classrooms() async -> [RawClassroom]? {
+        await soft(Librus.Path.classrooms, as: RawClassroomsResponse.self)?.classrooms
     }
 
-    func grades() async throws -> [RawGrade] {
-        try await get(Librus.Path.grades, as: RawGradesResponse.self).grades
+    func grades() async -> [RawGrade]? {
+        await soft(Librus.Path.grades, as: RawGradesResponse.self)?.grades
     }
 
-    func gradeCategories() async -> [RawGradeCategory] {
-        await getOptional(Librus.Path.gradeCategories, as: RawGradeCategoriesResponse.self)?.categories ?? []
+    func gradeCategories() async -> [RawGradeCategory]? {
+        await soft(Librus.Path.gradeCategories, as: RawGradeCategoriesResponse.self)?.categories
     }
 
-    func gradeComments() async -> [RawGradeComment] {
-        await getOptional(Librus.Path.gradeComments, as: RawGradeCommentsResponse.self)?.comments ?? []
+    func gradeComments() async -> [RawGradeComment]? {
+        await soft(Librus.Path.gradeComments, as: RawGradeCommentsResponse.self)?.comments
     }
 
-    func lessons() async -> [RawLessonDef] {
-        await getOptional(Librus.Path.lessons, as: RawLessonsResponse.self)?.lessons ?? []
+    func lessons() async -> [RawLessonDef]? {
+        await soft(Librus.Path.lessons, as: RawLessonsResponse.self)?.lessons
     }
 
-    func attendances() async -> [RawAttendance] {
-        await getOptional(Librus.Path.attendances, as: RawAttendancesResponse.self)?.attendances ?? []
+    func attendances() async -> [RawAttendance]? {
+        await soft(Librus.Path.attendances, as: RawAttendancesResponse.self)?.attendances
     }
 
-    func attendanceTypes() async -> [RawAttendanceType] {
-        await getOptional(Librus.Path.attendanceTypes, as: RawAttendanceTypesResponse.self)?.types ?? []
+    func attendanceTypes() async -> [RawAttendanceType]? {
+        await soft(Librus.Path.attendanceTypes, as: RawAttendanceTypesResponse.self)?.types
     }
 
+    /// nil = keep the previous value (request failed or Librus has no lucky number).
     func luckyNumber() async -> RawLuckyNumberResponse.Inner? {
-        await getOptional(Librus.Path.luckyNumber, as: RawLuckyNumberResponse.self)?.luckyNumber
+        await soft(Librus.Path.luckyNumber, as: RawLuckyNumberResponse.self)?.luckyNumber
     }
 
-    func announcements() async -> [RawAnnouncement] {
-        await getOptional(Librus.Path.schoolNotices, as: RawAnnouncementsResponse.self)?.announcements ?? []
+    func announcements() async -> [RawAnnouncement]? {
+        await soft(Librus.Path.schoolNotices, as: RawAnnouncementsResponse.self)?.announcements
     }
 
-    func homework() async -> [RawHomework] {
-        await getOptional(Librus.Path.homeworks, as: RawHomeworkResponse.self)?.items ?? []
+    func homework() async -> [RawHomework]? {
+        await soft(Librus.Path.homeworks, as: RawHomeworkResponse.self)?.items
     }
 
+    /// nil = keep the previous value (request failed or no class data).
     func classes() async -> RawStudentClass? {
-        await getOptional(Librus.Path.classes, as: RawClassesResponse.self)?.studentClass
+        await soft(Librus.Path.classes, as: RawClassesResponse.self)?.studentClass
     }
 
-    func notes() async -> [RawNote] {
-        await getOptional(Librus.Path.notes, as: RawNotesResponse.self)?.notes ?? []
+    func notes() async -> [RawNote]? {
+        await soft(Librus.Path.notes, as: RawNotesResponse.self)?.notes
     }
 
-    func noteCategories() async -> [RawNoteCategory] {
-        await getOptional(Librus.Path.noteCategories, as: RawNoteCategoriesResponse.self)?.categories ?? []
+    func noteCategories() async -> [RawNoteCategory]? {
+        await soft(Librus.Path.noteCategories, as: RawNoteCategoriesResponse.self)?.categories
     }
 
     func timetable(weekStart: Date) async throws -> [String: [[RawLesson]]] {

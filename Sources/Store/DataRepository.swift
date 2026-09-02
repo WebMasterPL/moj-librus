@@ -36,6 +36,15 @@ final class DataRepository {
     /// Set by `AppState`; invoked when a request proves the session is dead.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
 
+    // Last-known lookup tables, kept so a single blipping endpoint doesn't break joins.
+    @ObservationIgnored private var rawSubjects: [RawSubject] = []
+    @ObservationIgnored private var rawUsers: [RawUser] = []
+    @ObservationIgnored private var rawCategories: [RawGradeCategory] = []
+    @ObservationIgnored private var rawComments: [RawGradeComment] = []
+    @ObservationIgnored private var rawLessons: [RawLessonDef] = []
+    @ObservationIgnored private var rawAttTypes: [RawAttendanceType] = []
+    @ObservationIgnored private var rawNoteCats: [RawNoteCategory] = []
+
     /// Locally-tracked "read" state for announcements (Librus has no student-side write here).
     private var readAnnouncementIDs: Set<String> = []
 
@@ -130,33 +139,27 @@ final class DataRepository {
             async let noteCategoriesT = api.noteCategories()
 
             let me = try await meT
-            let subjects = try await subjectsT
-            let users = try await usersT
-            let grades = try await gradesT
 
-            let categories = await categoriesT
-            let comments = await commentsT
-            let lessons = await lessonsT
-            let attTypes = await attTypesT
-            let atts = await attsT
-            let lucky = await luckyT
-            let anns = await announcementsT
-            let hw = await homeworkT
-            let studentClass = await classesT
-            let rawNotes = await notesT
-            let noteCats = await noteCategoriesT
+            // Refresh lookup tables in place; keep the old ones on failure.
+            if let v = await subjectsT { rawSubjects = v }
+            if let v = await usersT { rawUsers = v }
+            if let v = await categoriesT { rawCategories = v }
+            if let v = await commentsT { rawComments = v }
+            if let v = await lessonsT { rawLessons = v }
+            if let v = await attTypesT { rawAttTypes = v }
+            if let v = await noteCategoriesT { rawNoteCats = v }
 
-            let subjectByID = Dictionary(subjects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            let userByID = Dictionary(users.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            let categoryByID = Dictionary(categories.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            let commentByID = Dictionary(comments.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            let lessonByID = Dictionary(lessons.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            let attTypeByID = Dictionary(attTypes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let subjectByID = Dictionary(rawSubjects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let userByID = Dictionary(rawUsers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let categoryByID = Dictionary(rawCategories.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let commentByID = Dictionary(rawComments.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let lessonByID = Dictionary(rawLessons.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let attTypeByID = Dictionary(rawAttTypes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let noteCatByID = Dictionary(rawNoteCats.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
             studentName = me.displayName
 
-            // --- School year / class ---
-            if let sc = studentClass {
+            if let sc = await classesT {
                 schoolYear = SchoolYearInfo(
                     className: sc.name.isEmpty ? nil : sc.name,
                     tutor: sc.classTutor.flatMap { userByID[$0.id]?.displayName },
@@ -166,54 +169,57 @@ final class DataRepository {
                 )
             }
 
-            // --- Behaviour notes (uwagi) ---
-            let noteCatByID = Dictionary(noteCats.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            notes = rawNotes.map { n in
-                NoteItem(
-                    id: n.id, text: n.text,
-                    category: n.category.flatMap { noteCatByID[$0.id]?.name },
-                    teacher: n.teacher.flatMap { userByID[$0.id]?.displayName },
-                    date: LibrusDate.fromYMD(n.date),
-                    kind: n.positive == 1 ? .positive : (n.positive == 0 ? .negative : .neutral)
+            if let rawNotes = await notesT {
+                notes = rawNotes.map { n in
+                    NoteItem(
+                        id: n.id, text: n.text,
+                        category: n.category.flatMap { noteCatByID[$0.id]?.name },
+                        teacher: n.teacher.flatMap { userByID[$0.id]?.displayName },
+                        date: LibrusDate.fromYMD(n.date),
+                        kind: n.positive == 1 ? .positive : (n.positive == 0 ? .negative : .neutral)
+                    )
+                }.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+            }
+
+            if let grades = await gradesT {
+                subjectGrades = Self.joinGrades(
+                    grades, subjectByID: subjectByID, userByID: userByID,
+                    categoryByID: categoryByID, commentByID: commentByID
                 )
-            }.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+            }
 
-            // --- Grades ---
-            subjectGrades = Self.joinGrades(
-                grades, subjectByID: subjectByID, userByID: userByID,
-                categoryByID: categoryByID, commentByID: commentByID
-            )
-
-            // --- Lucky number ---
-            if let lucky, let n = lucky.number {
+            if let lucky = await luckyT, let n = lucky.number {
                 luckyNumber = LuckyNumberInfo(number: n, day: LibrusDate.fromYMD(lucky.day))
             }
 
-            // --- Attendance ---
-            (attendanceSummary, attendanceItems) = Self.joinAttendance(
-                atts, typeByID: attTypeByID, lessonDefByID: lessonByID, subjectByID: subjectByID
-            )
-
-            // --- Announcements ---
-            announcements = anns.map { a in
-                AnnouncementItem(
-                    id: a.id, subject: a.subject, content: a.content,
-                    author: a.addedBy.flatMap { userByID[$0.id]?.displayName },
-                    date: LibrusDate.fromISO(a.creationDate) ?? LibrusDate.fromYMD(a.startDate),
-                    wasReadOnServer: a.wasRead
+            if let atts = await attsT {
+                (attendanceSummary, attendanceItems) = Self.joinAttendance(
+                    atts, typeByID: attTypeByID, lessonDefByID: lessonByID, subjectByID: subjectByID
                 )
-            }.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+            }
 
-            // --- Homework ---
-            homework = hw.map { h in
-                HomeworkItem(
-                    id: h.id, topic: h.topic, text: h.text,
-                    dueDate: LibrusDate.fromYMD(h.dueDate),
-                    createdDate: LibrusDate.fromYMD(h.createdDate),
-                    teacher: h.teacher.flatMap { userByID[$0.id]?.displayName },
-                    subject: h.subject.flatMap { subjectByID[$0.id]?.name }
-                )
-            }.sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
+            if let anns = await announcementsT {
+                announcements = anns.map { a in
+                    AnnouncementItem(
+                        id: a.id, subject: a.subject, content: a.content,
+                        author: a.addedBy.flatMap { userByID[$0.id]?.displayName },
+                        date: LibrusDate.fromISO(a.creationDate) ?? LibrusDate.fromYMD(a.startDate),
+                        wasReadOnServer: a.wasRead
+                    )
+                }.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+            }
+
+            if let hw = await homeworkT {
+                homework = hw.map { h in
+                    HomeworkItem(
+                        id: h.id, topic: h.topic, text: h.text,
+                        dueDate: LibrusDate.fromYMD(h.dueDate),
+                        createdDate: LibrusDate.fromYMD(h.createdDate),
+                        teacher: h.teacher.flatMap { userByID[$0.id]?.displayName },
+                        subject: h.subject.flatMap { subjectByID[$0.id]?.name }
+                    )
+                }.sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
+            }
 
             lastSync = Date()
             saveCache()
