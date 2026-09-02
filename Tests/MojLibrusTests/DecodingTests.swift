@@ -41,6 +41,26 @@ final class DecodingTests: XCTestCase {
         XCTAssertTrue(day[1].isEmpty)
     }
 
+    func testTimetableSkipsMalformedDay() throws {
+        // One valid day, one day whose value is not an array of arrays.
+        let json = """
+        { "Timetable": {
+            "2026-09-01": [ [ { "LessonNo": 1, "HourFrom": "08:00", "HourTo": "08:45",
+                                "Subject": { "Id": 3, "Name": "Matematyka" } } ] ],
+            "2026-09-02": "przerwa techniczna"
+        } }
+        """
+        let resp = try decoder.decode(RawTimetableResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(resp.days.count, 1)
+        XCTAssertNotNil(resp.days["2026-09-01"])
+        XCTAssertNil(resp.days["2026-09-02"])
+    }
+
+    func testTimetableEmptyWhenArray() throws {
+        let resp = try decoder.decode(RawTimetableResponse.self, from: Data(#"{ "Timetable": [] }"#.utf8))
+        XCTAssertTrue(resp.days.isEmpty)
+    }
+
     func testDecodeLuckyNumber() throws {
         let json = #"{ "LuckyNumber": { "LuckyNumberDay": "2026-09-02", "LuckyNumber": 7 } }"#
         let resp = try decoder.decode(RawLuckyNumberResponse.self, from: Data(json.utf8))

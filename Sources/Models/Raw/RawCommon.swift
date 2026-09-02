@@ -27,3 +27,11 @@ extension KeyedDecodingContainer {
         return nil
     }
 }
+
+/// String-keyed `CodingKey` for decoding objects with arbitrary keys (dates, ids).
+struct DynamicKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}

@@ -10,7 +10,18 @@ struct RawTimetableResponse: Decodable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        days = (try? c.decode([String: [[RawLesson]]].self, forKey: .timetable)) ?? [:]
+        // Decode day-by-day so one malformed day doesn't lose the whole week.
+        guard let dayContainer = try? c.nestedContainer(keyedBy: DynamicKey.self, forKey: .timetable) else {
+            days = [:]
+            return
+        }
+        var result: [String: [[RawLesson]]] = [:]
+        for key in dayContainer.allKeys {
+            if let day = try? dayContainer.decode([[RawLesson]].self, forKey: key) {
+                result[key.stringValue] = day
+            }
+        }
+        days = result
     }
 }
 

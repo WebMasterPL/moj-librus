@@ -11,17 +11,21 @@ przez **SideStore/AltStore** darmowym Apple ID.
 
 | Ekran | Źródło danych |
 |---|---|
-| Pulpit (numerek, dzisiejsze lekcje, ostatnie oceny, liczniki) | agregacja |
-| Oceny — wg przedmiotów, średnie ważone, szczegóły | `api.librus.pl/2.0/Grades` |
-| Plan lekcji — tydzień, zastępstwa, odwołania | `.../2.0/Timetables` |
-| Frekwencja — podsumowanie % + wpisy | `.../2.0/Attendances` |
+| Pulpit (numerek, dzisiejsze lekcje, ostatnie oceny, klasa, liczniki) | agregacja |
+| Oceny — wg przedmiotów, średnie ważone, filtr semestru, **kalkulator „co jeśli / ile potrzebuję"** | `api.librus.pl/2.0/Grades` |
+| Plan lekcji — tydzień, zastępstwa, odwołania, znacznik „dziś" | `.../2.0/Timetables` |
+| Frekwencja — podsumowanie % + wpisy, filtr semestru | `.../2.0/Attendances` |
 | Ogłoszenia | `.../2.0/SchoolNotices` |
 | Zadania domowe | `.../2.0/HomeWorkAssignments` |
+| Uwagi | `.../2.0/Notes` |
 | Szczęśliwy numerek | `.../2.0/LuckyNumbers` |
 | Wiadomości (odczyt, *best-effort*) | mostek `synergia.librus.pl` → `wiadomosci.librus.pl` |
+| Ustawienia → **Diagnostyka połączenia** — test każdego endpointu + kopiuj raport | — |
 
-Dane logowania trzymane są **wyłącznie w Keychainie urządzenia**. Aplikacja nie ma
-własnego serwera ani telemetrii — łączy się tylko z `*.librus.pl`.
+Granica semestru brana z `.../2.0/Classes` (`EndFirstSemester`); gdy jej brak — fallback
+po miesiącu. Dane logowania trzymane są **wyłącznie w Keychainie urządzenia**. Aplikacja
+nie ma własnego serwera ani telemetrii — łączy się tylko z `*.librus.pl`. Chwilowy błąd
+jednego endpointu nie czyści ekranu (zostają dane z cache).
 
 ## Jak to zbudować
 
@@ -70,6 +74,8 @@ Domyślnie: nazwa **„Mój Librus"**, bundle ID `com.olekd.mojlibrus`. Aby zmie
 
 ## Problemy
 
+- **Coś nie działa?** Ustawienia → **Diagnostyka połączenia** → *Uruchom test* → *Kopiuj
+  raport*. Wyślij raport — pokazuje, który endpoint zawodzi i z jakim błędem.
 - **`librus_captcha_needed` przy logowaniu** — Librus rzadko wymaga captchy. Zaloguj się
   raz przez przeglądarkę na `synergia.librus.pl`, poczekaj kilka minut i spróbuj ponownie.
 - **„Nie udało się zalogować do skrzynki wiadomości"** — mostek do `wiadomosci.librus.pl`
