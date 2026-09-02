@@ -3,7 +3,7 @@ import SwiftUI
 struct TimetableView: View {
     @Environment(DataRepository.self) private var repo
 
-    @State private var weekStart = LibrusDate.weekStart()
+    @State private var weekStart = LibrusDate.defaultTimetableWeekStart()
     @State private var isLoading = false
 
     private var weekKey: String { LibrusDate.ymdString(weekStart) }

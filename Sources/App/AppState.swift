@@ -20,8 +20,7 @@ final class AppState {
 
     func bootstrap() async {
         if await session.isLoggedIn {
-            let repo = DataRepository(session: session)
-            repository = repo
+            let repo = startRepository()
             phase = .loggedIn
             await repo.refreshCore()
         } else {
@@ -38,8 +37,7 @@ final class AppState {
                 login: login.trimmingCharacters(in: .whitespacesAndNewlines),
                 password: password
             )
-            let repo = DataRepository(session: session)
-            repository = repo
+            let repo = startRepository()
             phase = .loggedIn
             await repo.refreshCore()
         } catch {
@@ -52,5 +50,24 @@ final class AppState {
         await session.logOut()
         repository = nil
         phase = .loggedOut
+    }
+
+    /// Called when a data request finds the session is truly dead (refresh + re-auth failed).
+    /// Keeps the cached data so the user isn't staring at a blank screen after re-login.
+    func handleSessionExpired() async {
+        guard phase == .loggedIn else { return }
+        await session.logOut()
+        repository = nil
+        phase = .loggedOut
+        loginError = "Sesja wygasła — zaloguj się ponownie."
+    }
+
+    private func startRepository() -> DataRepository {
+        let repo = DataRepository(session: session)
+        repo.onSessionExpired = { [weak self] in
+            Task { await self?.handleSessionExpired() }
+        }
+        repository = repo
+        return repo
     }
 }

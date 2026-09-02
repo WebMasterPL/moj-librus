@@ -55,6 +55,13 @@ enum LibrusDate {
         return calendar.date(from: comps) ?? date
     }
 
+    /// Week to open the timetable on: current week, or next week on the weekend.
+    static func defaultTimetableWeekStart() -> Date {
+        let weekday = calendar.component(.weekday, from: Date()) // 1 = Sunday, 7 = Saturday
+        let start = weekStart()
+        return (weekday == 1 || weekday == 7) ? addDays(7, to: start) : start
+    }
+
     static func addDays(_ days: Int, to date: Date) -> Date {
         calendar.date(byAdding: .day, value: days, to: date) ?? date
     }

@@ -33,6 +33,9 @@ final class DataRepository {
     var lastError: String?
     var messagesError: String?
 
+    /// Set by `AppState`; invoked when a request proves the session is dead.
+    @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
+
     /// Locally-tracked "read" state for announcements (Librus has no student-side write here).
     private var readAnnouncementIDs: Set<String> = []
 
@@ -215,7 +218,16 @@ final class DataRepository {
             lastSync = Date()
             saveCache()
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            handle(error, into: \.lastError)
+        }
+    }
+
+    /// Records the message and, for a dead session, notifies `AppState`.
+    private func handle(_ error: Error, into keyPath: ReferenceWritableKeyPath<DataRepository, String?>) {
+        let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        self[keyPath: keyPath] = text
+        if let apiError = error as? APIError, case .tokenExpired = apiError {
+            onSessionExpired?()
         }
     }
 
@@ -236,7 +248,7 @@ final class DataRepository {
             saveCache()
         } catch {
             if timetableWeeks[key] == nil {
-                lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                handle(error, into: \.lastError)
             }
         }
     }
@@ -250,14 +262,14 @@ final class DataRepository {
             messagesInbox = list.sorted { ($0.sentDate ?? .distantPast) > ($1.sentDate ?? .distantPast) }
             saveCache()
         } catch {
-            messagesError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            handle(error, into: \.messagesError)
         }
     }
 
     func loadMessageBody(_ id: Int) async -> String? {
         do { return try await messages.body(messageId: id) }
         catch {
-            messagesError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            handle(error, into: \.messagesError)
             return nil
         }
     }
