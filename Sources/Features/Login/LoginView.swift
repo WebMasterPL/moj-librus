@@ -19,14 +19,15 @@ struct LoginView: View {
                     .foregroundStyle(.tint)
                 Text("Mój Librus")
                     .font(.largeTitle.bold())
-                Text("Zaloguj się kontem Synergia")
+                Text("Zaloguj się kontem LIBRUS")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
 
             VStack(spacing: 12) {
-                TextField("Login (np. 1234567u)", text: $login)
+                TextField("Login lub e-mail LIBRUS", text: $login)
                     .textContentType(.username)
+                    .keyboardType(.emailAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($focus, equals: .login)
@@ -56,7 +57,7 @@ struct LoginView: View {
             .controlSize(.large)
             .disabled(login.isEmpty || password.isEmpty || app.isLoggingIn)
 
-            Text("Aplikacja łączy się bezpośrednio z api.librus.pl. Dane logowania są przechowywane wyłącznie w Keychainie tego urządzenia.")
+            Text("Logowanie przez portal.librus.pl (jak w oficjalnej apce). Dane logowania są przechowywane wyłącznie w Keychainie tego urządzenia.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

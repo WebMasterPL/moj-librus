@@ -32,12 +32,27 @@ struct Diagnostics {
             ("Notes", Librus.Path.notes),
         ]
 
-        var results: [DiagnosticResult] = []
-        for (name, path) in checks {
-            results.append(await check(name: name, path: path))
+        var results: [DiagnosticResult] = [await checkLogin()]
+
+        // If login itself failed, the rest will all fail the same way — skip them.
+        if results[0].ok {
+            for (name, path) in checks {
+                results.append(await check(name: name, path: path))
+            }
+            results.append(await checkMessages())
         }
-        results.append(await checkMessages())
         return results
+    }
+
+    private func checkLogin() async -> DiagnosticResult {
+        do {
+            let token = try await session.validAccessToken()
+            return DiagnosticResult(name: "Logowanie (Portal → Synergia)", ok: !token.isEmpty,
+                                    detail: token.isEmpty ? "pusty token" : "token OK (\(token.prefix(6))…)")
+        } catch {
+            let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            return DiagnosticResult(name: "Logowanie (Portal → Synergia)", ok: false, detail: msg)
+        }
     }
 
     private func check(name: String, path: String) async -> DiagnosticResult {

@@ -1,21 +1,30 @@
 import Foundation
 
-/// Everything needed to talk to Librus on behalf of one Synergia account.
-/// Persisted as a single JSON blob in the keychain.
+/// Everything needed to talk to Librus on behalf of one Synergia account,
+/// obtained through the Portal OAuth flow. Persisted as one JSON blob in the keychain.
 struct Credentials: Codable, Equatable {
+    /// Portal login (Synergia login like `1234567u`, or a Librus e-mail).
     var login: String
     var password: String
-    var accessToken: String
-    var refreshToken: String
-    /// Absolute expiry of `accessToken` (seconds since 1970).
-    var accessTokenExpiry: Double
 
-    var isAccessTokenValid: Bool {
-        // 60 s safety margin.
-        Date().timeIntervalSince1970 < accessTokenExpiry - 60
+    var portal: PortalTokens
+
+    /// The Synergia account chosen from the portal account list.
+    var synergiaLogin: String
+    var synergiaToken: String
+    /// Absolute expiry of `synergiaToken` (seconds since 1970).
+    var synergiaExpiry: Double
+    var studentName: String?
+
+    var isSynergiaTokenValid: Bool {
+        !synergiaToken.isEmpty && Date().timeIntervalSince1970 < synergiaExpiry - 120
     }
 
-    static let keychainKey = "credentials.v1"
+    var isPortalTokenValid: Bool {
+        !portal.accessToken.isEmpty && Date().timeIntervalSince1970 < portal.expiry - 60
+    }
+
+    static let keychainKey = "credentials.v2"
 
     static func load() -> Credentials? {
         Keychain.json(Credentials.self, for: keychainKey)
@@ -27,5 +36,6 @@ struct Credentials: Codable, Equatable {
 
     static func clear() {
         Keychain.delete(keychainKey)
+        Keychain.delete("credentials.v1") // legacy
     }
 }
