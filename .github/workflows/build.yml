@@ -32,9 +32,21 @@ jobs:
       - name: Install tools
         run: brew install xcodegen xcbeautify
 
-      - name: Compute build number
+      - name: Compute version
         id: ver
-        run: echo "build=$(( GITHUB_RUN_NUMBER + 1 ))" >> "$GITHUB_OUTPUT"
+        run: |
+          BUILD=$(( GITHUB_RUN_NUMBER + 1000 ))
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            IS_TAG=1
+          else
+            VERSION="0.0.${BUILD}"
+            IS_TAG=0
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "is_tag=$IS_TAG" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION (build $BUILD)"
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -68,6 +80,7 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            MARKETING_VERSION=${{ steps.ver.outputs.version }} \
             CURRENT_PROJECT_VERSION=${{ steps.ver.outputs.build }} \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             clean build \
@@ -77,6 +90,7 @@ jobs:
         run: |
           APP_PATH="build/Build/Products/Release-iphoneos/$APP_NAME.app"
           if [ ! -d "$APP_PATH" ]; then echo "::error::$APP_PATH not found"; exit 1; fi
+          echo "Built version: $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP_PATH/Info.plist")"
           rm -rf Payload "$APP_NAME.ipa"
           mkdir Payload
           cp -R "$APP_PATH" Payload/
@@ -87,12 +101,10 @@ jobs:
 
       - name: Refresh SideStore source (apps.json)
         run: |
-          APP_PLIST="build/Build/Products/Release-iphoneos/$APP_NAME.app/Info.plist"
-          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$APP_PLIST")
           SIZE=$(stat -f%z "dist/$APP_NAME.ipa")
           DATE=$(date -u +%Y-%m-%d)
           DL="https://github.com/${{ github.repository }}/releases/latest/download/$APP_NAME.ipa"
-          python3 - "$VERSION" "${{ steps.ver.outputs.build }}" "$SIZE" "$DATE" "$DL" "${{ github.repository }}" <<'PY'
+          python3 - "${{ steps.ver.outputs.version }}" "${{ steps.ver.outputs.build }}" "$SIZE" "$DATE" "$DL" "${{ github.repository }}" <<'PY'
           import json, sys, pathlib
           version, build, size, date, url, repo = sys.argv[1:7]
           p = pathlib.Path("apps.json")
@@ -102,13 +114,15 @@ jobs:
           app["iconURL"] = f"https://raw.githubusercontent.com/{repo}/main/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
           entry = {"version": version, "buildVersion": build, "date": date,
                    "localizedDescription": f"Wersja {version} (build {build}).",
-                   "downloadURL": url, "size": int(size)}
+                   "downloadURL": url, "size": int(size), "minOSVersion": "17.0"}
           app["version"] = version
           app["versionDate"] = date
           app["versionDescription"] = entry["localizedDescription"]
           app["downloadURL"] = url
           app["size"] = int(size)
-          app["versions"] = [entry] + [v for v in app.get("versions", []) if v.get("version") != version]
+          kept = [v for v in app.get("versions", []) if v.get("version") != version]
+          app["versions"] = [entry] + kept
+          p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
           pathlib.Path("dist/apps.json").write_text(
               json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
           print("apps.json ->", version, "build", build, size, "bytes")
@@ -131,3 +145,20 @@ jobs:
             dist/MojLibrus.ipa
             dist/apps.json
           generate_release_notes: true
+
+      - name: Commit updated apps.json to main (tags only)
+        if: steps.ver.outputs.is_tag == '1'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main || true
+          cp dist/apps.json apps.json
+          if git diff --quiet -- apps.json; then
+            echo "apps.json unchanged"
+          else
+            git add apps.json
+            git commit -m "ci: apps.json -> ${{ steps.ver.outputs.version }} [skip ci]"
+            git push origin main
+          fi
