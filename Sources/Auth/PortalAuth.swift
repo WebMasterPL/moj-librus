@@ -34,17 +34,18 @@ struct SynergiaAccount: Decodable {
 /// redirect chain to `app://librus?code=…`, exchange for portal tokens, then pull
 /// per-Synergia-account bearer tokens.
 actor PortalAuth {
-    private let http: URLSession
-    private let cookies = HTTPCookieStorage()
+    /// The session used for the current login flow (fresh cookies each time).
+    private var http: URLSession = PortalAuth.makeSession()
 
-    init() {
+    private static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = cookies
+        config.httpCookieStorage = HTTPCookieStorage()
         config.httpCookieAcceptPolicy = .always
         config.httpShouldSetCookies = true
+        config.httpShouldUsePipelining = false
         config.timeoutIntervalForRequest = 30
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        http = URLSession(configuration: config, delegate: RedirectBlocker(), delegateQueue: nil)
+        return URLSession(configuration: config, delegate: RedirectBlocker(), delegateQueue: nil)
     }
 
     private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
@@ -77,11 +78,16 @@ actor PortalAuth {
 
     func synergiaAccounts(portalToken: String) async throws -> [SynergiaAccount] {
         let data = try await portalGET(Librus.synergiaAccountsURL(), bearer: portalToken)
-        struct Wrapper: Decodable { let accounts: [SynergiaAccount] }
-        guard let wrapper = try? JSONDecoder().decode(Wrapper.self, from: data) else {
-            throw APIError.decoding("SynergiaAccounts")
+        let decoder = JSONDecoder()
+        struct Wrapper: Decodable { let accounts: [SynergiaAccount]? }
+        if let accounts = (try? decoder.decode(Wrapper.self, from: data))?.accounts {
+            return accounts
         }
-        return wrapper.accounts
+        if let accounts = try? decoder.decode([SynergiaAccount].self, from: data) {
+            return accounts
+        }
+        let body = String(data: data, encoding: .utf8)?.prefix(200) ?? ""
+        throw APIError.librus(code: "accounts_shape", message: "Nie rozpoznano listy kont: \(body)")
     }
 
     func freshSynergiaToken(login: String, portalToken: String) async throws -> String {
@@ -96,15 +102,18 @@ actor PortalAuth {
     // MARK: - Login flow
 
     private func runLoginFlow(login: String, password: String) async throws -> String {
-        cookies.removeCookies(since: .distantPast)
+        http.invalidateAndCancel()
+        http = PortalAuth.makeSession() // clean cookie jar for this attempt
 
         // 1. Walk the redirect chain from the authorize URL to the login page.
         var url = Librus.portalAuthorizeURL
         var loginHTML: String?
+        var trail = "→ redirect/dru"
 
         for _ in 0..<15 {
             let (data, response) = try await send(url, method: "GET",
                 headers: ["X-Requested-With": Librus.portalRequestedWith])
+            trail += " [\(response.statusCode)]"
 
             if let location = response.value(forHTTPHeaderField: "Location") {
                 if let code = codeFromLocation(location) { return code }
@@ -112,6 +121,7 @@ actor PortalAuth {
                     throw APIError.librus(code: "rejected_client", message: "Portal odrzucił klienta OAuth.")
                 }
                 url = absoluteURL(location, relativeTo: url)
+                trail += " → " + shortPath(url)
                 continue
             }
 
@@ -120,11 +130,13 @@ actor PortalAuth {
                 loginHTML = html
                 break
             }
-            throw APIError.librus(code: "portal_flow", message: "Nieoczekiwana strona portalu przed logowaniem.")
+            throw APIError.librus(code: "portal_flow",
+                message: "Nieoczekiwana strona portalu przed logowaniem (\(trail), \(data.count) B).")
         }
 
         guard let loginHTML else {
-            throw APIError.librus(code: "portal_flow", message: "Nie znaleziono formularza logowania portalu.")
+            throw APIError.librus(code: "portal_flow",
+                message: "Nie znaleziono formularza logowania portalu (\(trail)).")
         }
         if loginHTML.range(of: "recaptcha|g-recaptcha|grecaptcha", options: .regularExpression) != nil {
             throw APIError.captchaNeeded
@@ -149,6 +161,7 @@ actor PortalAuth {
             Librus.portalLoginActionURL, method: "POST", headers: headers, form: form)
 
         try assertLoginOK(data: postData, response: postResponse)
+        trail += " → POST login/action [\(postResponse.statusCode)]"
 
         // 3. Follow redirects from the login response to the code.
         var next = postResponse.value(forHTTPHeaderField: "Location")
@@ -162,32 +175,43 @@ actor PortalAuth {
             if target.contains("/konto-librus/login") && !target.contains("/action") {
                 throw APIError.invalidCredentials
             }
+            trail += " → " + shortPath(target)
 
             let (data, response) = try await send(target, method: "GET",
                 headers: ["X-Requested-With": Librus.portalRequestedWith])
+            trail += " [\(response.statusCode)]"
 
             if let loc = response.value(forHTTPHeaderField: "Location") {
                 next = loc
                 continue
             }
-            // Landed on a page instead of redirecting — inspect it.
             let html = String(data: data, encoding: .utf8) ?? ""
             if html.range(of: "recaptcha|g-recaptcha|captcha", options: [.regularExpression, .caseInsensitive]) != nil {
                 throw APIError.captchaNeeded
             }
-            throw APIError.librus(code: "portal_flow", message: "Logowanie utknęło na stronie portalu.")
+            throw APIError.librus(code: "portal_flow",
+                message: "Logowanie utknęło na stronie portalu (\(trail), \(data.count) B).")
         }
-        throw APIError.librus(code: "portal_flow", message: "Za dużo przekierowań przy logowaniu.")
+        throw APIError.librus(code: "portal_flow", message: "Za dużo przekierowań przy logowaniu (\(trail)).")
+    }
+
+    private func shortPath(_ url: String) -> String {
+        guard let comps = URLComponents(string: url) else { return url }
+        return (comps.path.isEmpty ? "/" : comps.path)
     }
 
     private func assertLoginOK(data: Data, response: HTTPURLResponse) throws {
         let text = String(data: data, encoding: .utf8) ?? ""
-        let failMarkers = [
+        let badCreds = [
             "Upewnij się, że nie", "Podany adres e-mail jest nieprawidłowy",
-            "Nieprawidłowy login lub hasło", "Sesja logowania wygasła",
+            "Nieprawidłowy login lub hasło", "nieprawidłowy login lub hasło",
         ]
-        if failMarkers.contains(where: text.contains) {
+        if badCreds.contains(where: text.contains) {
             throw APIError.invalidCredentials
+        }
+        if text.contains("Sesja logowania wygasła") || response.statusCode == 419 {
+            throw APIError.librus(code: "csrf",
+                message: "Sesja logowania portalu wygasła (błąd CSRF). Spróbuj ponownie.")
         }
         if text.range(of: "recaptcha|g-recaptcha", options: .regularExpression) != nil {
             throw APIError.captchaNeeded

@@ -24,10 +24,12 @@ enum APIError: LocalizedError, Equatable {
         case .decoding(let d):
             return "Nie udało się odczytać danych z Librusa (\(d))."
         case .invalidCredentials:
-            return "Nieprawidłowy login lub hasło Synergii."
+            return "Portal Librus odrzucił dane logowania. Aplikacja (tak jak oficjalna appka "
+                + "Librus) wymaga KONTA LIBRUS — e-mail + hasło założone na konto.librus.pl i "
+                + "połączone z Twoją Synergią. Sam login szkolny (np. 1234567u) tu nie zadziała."
         case .captchaNeeded:
             return "Librus poprosił o captchę. Zaloguj się raz przez przeglądarkę na "
-                + "synergia.librus.pl, a potem spróbuj ponownie w aplikacji."
+                + "portal.librus.pl, a potem spróbuj ponownie w aplikacji."
         case .tokenExpired:
             return "Sesja wygasła — zaloguj się ponownie."
         case .accessDenied(let what):

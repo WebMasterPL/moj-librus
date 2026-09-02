@@ -19,13 +19,17 @@ struct LoginView: View {
                     .foregroundStyle(.tint)
                 Text("Mój Librus")
                     .font(.largeTitle.bold())
-                Text("Zaloguj się kontem LIBRUS")
+                Text("Zaloguj się Kontem LIBRUS")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                Text("e-mail + hasło z konto.librus.pl (jak w oficjalnej apce), nie sam login szkolny")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
             }
 
             VStack(spacing: 12) {
-                TextField("Login lub e-mail LIBRUS", text: $login)
+                TextField("E-mail Konta LIBRUS", text: $login)
                     .textContentType(.username)
                     .keyboardType(.emailAddress)
                     .textInputAutocapitalization(.never)

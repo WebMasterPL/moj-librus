@@ -2,9 +2,13 @@
 
 Prywatna aplikacja iOS (SwiftUI) do dziennika **Librus Synergia** — na własny użytek.
 Wzorowana funkcjonalnie na [szkolny.eu](https://szkolny.eu), ale obsługuje **wyłącznie
-Librusa**. Logowanie przez **portal.librus.pl** (tak jak oficjalna apka „Synergia Dru2") —
-loginem Synergia (`1234567u`) lub e-mailem LIBRUS. Bezpośredni login `api.librus.pl`
-(`grant_type=password`) Librus wyłączył w 2026, więc jedyna działająca droga to Portal OAuth.
+Librusa**. Logowanie przez **portal.librus.pl** (tak jak oficjalna apka „Synergia Dru2").
+
+> **Wymaga Konta LIBRUS.** Aplikacja — dokładnie jak oficjalna apka Librus — loguje się
+> **Kontem LIBRUS** (e-mail + hasło z [konto.librus.pl](https://konto.librus.pl), połączone
+> z Twoją Synergią). Sam login szkolny (`1234567u`) **nie zadziała** — bezpośredni login
+> `api.librus.pl` (`grant_type=password`) Librus wyłączył w 2026. Jeśli nie masz Konta LIBRUS:
+> konto.librus.pl → *Załóż Konto LIBRUS* → połącz z kontem Synergia.
 
 Nie potrzebujesz Maca ani Xcode: aplikację buduje **GitHub Actions**, a instalujesz ją
 przez **SideStore/AltStore** darmowym Apple ID.
