@@ -61,11 +61,34 @@ final class DecodingTests: XCTestCase {
         XCTAssertTrue(resp.days.isEmpty)
     }
 
-    func testDecodeLuckyNumber() throws {
-        let json = #"{ "LuckyNumber": { "LuckyNumberDay": "2026-09-02", "LuckyNumber": 7 } }"#
-        let resp = try decoder.decode(RawLuckyNumberResponse.self, from: Data(json.utf8))
-        XCTAssertEqual(resp.luckyNumber?.number, 7)
-        XCTAssertEqual(resp.luckyNumber?.day, "2026-09-02")
+    func testDecodeSchoolBellSchedule() throws {
+        let json = """
+        { "School": { "Name": "SP 1", "Town": "warszawa", "LessonsRange": [
+            { "From": "0:00", "To": "0:00" },
+            { "From": "8:00", "To": "8:45" },
+            { "From": "8:55", "To": "9:40" }
+        ] } }
+        """
+        let resp = try decoder.decode(RawSchoolResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(resp.school?.lessonsRange.count, 3)
+        XCTAssertEqual(resp.school?.lessonsRange[1].from, "8:00")
+        XCTAssertEqual(resp.school?.name, "SP 1")
+    }
+
+    func testTimetableRoomChange() throws {
+        let json = """
+        { "Timetable": { "2026-09-01": [ [ {
+          "LessonNo": 2, "HourFrom": "08:55", "HourTo": "09:40",
+          "Subject": { "Id": 3, "Name": "Fizyka" },
+          "Classroom": { "Id": 9, "Name": "204" },
+          "OrgClassroom": { "Id": 4, "Name": "12" },
+          "IsSubstitutionClass": true, "IsCanceled": false
+        } ] ] } }
+        """
+        let resp = try decoder.decode(RawTimetableResponse.self, from: Data(json.utf8))
+        let lesson = try XCTUnwrap(resp.days["2026-09-01"]?.first?.first)
+        XCTAssertEqual(lesson.classroom?.name, "204")
+        XCTAssertEqual(lesson.orgClassroom?.name, "12")
     }
 
     func testDecodeAnnouncementsStringId() throws {

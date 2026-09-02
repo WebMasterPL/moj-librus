@@ -14,15 +14,15 @@ final class DataRepository {
     var studentName: String = ""
     var schoolYear = SchoolYearInfo()
 
-    var luckyNumber: LuckyNumberInfo?
     var subjectGrades: [SubjectGrades] = []
     var attendanceSummary = AttendanceSummary()
     var attendanceItems: [AttendanceItem] = []
     var announcements: [AnnouncementItem] = []
-    var homework: [HomeworkItem] = []
     var events: [CalendarEvent] = []
     var notes: [NoteItem] = []
     var messagesInbox: [MessageItem] = []
+    var bellSchedule: [BellPeriod] = []
+    var schoolName: String?
 
     var currentSemester: Int { schoolYear.semester() }
 
@@ -47,8 +47,9 @@ final class DataRepository {
     @ObservationIgnored private var rawNoteCats: [RawNoteCategory] = []
     @ObservationIgnored private var rawEventCats: [RawEventCategory] = []
 
-    /// Locally-tracked "read" state for announcements (Librus has no student-side write here).
+    /// Locally-tracked "read" state (Librus has no student-side write for these).
     private var readAnnouncementIDs: Set<String> = []
+    private var readMessageIDs: Set<Int> = []
 
     /// Bumped after every grade sync so the `SeenGrades`-backed views recompute.
     private var gradeSeenTick = 0
@@ -85,34 +86,36 @@ final class DataRepository {
     private struct Snapshot: Codable {
         var studentName: String
         var schoolYear: SchoolYearInfo
-        var lucky: LuckyNumberInfo?
         var subjectGrades: [SubjectGrades]
         var attendanceSummary: AttendanceSummary
         var attendanceItems: [AttendanceItem]
         var announcements: [AnnouncementItem]
-        var homework: [HomeworkItem]
         var events: [CalendarEvent]?
         var notes: [NoteItem]
         var messagesInbox: [MessageItem]
+        var bellSchedule: [BellPeriod]?
+        var schoolName: String?
         var lastSync: Date?
         var readAnnouncementIDs: [String]
+        var readMessageIDs: [Int]?
     }
 
     private func loadCache() {
         guard let s = Cache.load(Snapshot.self, from: "snapshot") else { return }
         studentName = s.studentName
         schoolYear = s.schoolYear
-        luckyNumber = s.lucky
         subjectGrades = s.subjectGrades
         attendanceSummary = s.attendanceSummary
         attendanceItems = s.attendanceItems
         announcements = s.announcements
-        homework = s.homework
         events = s.events ?? []
         notes = s.notes
         messagesInbox = s.messagesInbox
+        bellSchedule = s.bellSchedule ?? []
+        schoolName = s.schoolName
         lastSync = s.lastSync
         readAnnouncementIDs = Set(s.readAnnouncementIDs)
+        readMessageIDs = Set(s.readMessageIDs ?? [])
         if let cachedWeeks = Cache.load([String: [TimetableDay]].self, from: "timetable") {
             timetableWeeks = cachedWeeks
         }
@@ -120,22 +123,27 @@ final class DataRepository {
 
     private func saveCache() {
         let snap = Snapshot(
-            studentName: studentName, schoolYear: schoolYear, lucky: luckyNumber,
+            studentName: studentName, schoolYear: schoolYear,
             subjectGrades: subjectGrades, attendanceSummary: attendanceSummary,
             attendanceItems: attendanceItems, announcements: announcements,
-            homework: homework, events: events, notes: notes, messagesInbox: messagesInbox,
-            lastSync: lastSync, readAnnouncementIDs: Array(readAnnouncementIDs)
+            events: events, notes: notes, messagesInbox: messagesInbox,
+            bellSchedule: bellSchedule, schoolName: schoolName,
+            lastSync: lastSync, readAnnouncementIDs: Array(readAnnouncementIDs),
+            readMessageIDs: Array(readMessageIDs)
         )
         Cache.save(snap, as: "snapshot")
         Cache.save(timetableWeeks, as: "timetable")
+        SharedStore.publishTimetable(upcomingDays())
     }
 
     func clearLocal() {
         Cache.clearAll()
-        studentName = ""; schoolYear = .init(); luckyNumber = nil; subjectGrades = []
+        studentName = ""; schoolYear = .init(); subjectGrades = []
         attendanceSummary = .init(); attendanceItems = []
-        announcements = []; homework = []; events = []; notes = []; messagesInbox = []
+        announcements = []; events = []; notes = []; messagesInbox = []
+        bellSchedule = []; schoolName = nil
         SeenGrades.reset()
+        SharedStore.clear()
         timetableWeeks = [:]; lastSync = nil
     }
 
@@ -159,14 +167,13 @@ final class DataRepository {
             async let lessonsT = api.lessons()
             async let attTypesT = api.attendanceTypes()
             async let attsT = api.attendances()
-            async let luckyT = api.luckyNumber()
             async let announcementsT = api.announcements()
-            async let homeworkT = api.homework()
             async let classesT = api.classes()
             async let notesT = api.notes()
             async let noteCategoriesT = api.noteCategories()
             async let eventsT = api.events()
             async let eventCategoriesT = api.eventCategories()
+            async let schoolT = api.school()
 
             let me = try await meT
 
@@ -224,8 +231,13 @@ final class DataRepository {
                 gradeSeenTick &+= 1
             }
 
-            if let lucky = await luckyT, let n = lucky.number {
-                luckyNumber = LuckyNumberInfo(number: n, day: LibrusDate.fromYMD(lucky.day))
+            if let school = await schoolT {
+                schoolName = [school.name, school.town?.capitalized].compactMap { $0 }
+                    .filter { !$0.isEmpty }.joined(separator: ", ")
+                bellSchedule = school.lessonsRange.enumerated().compactMap { index, r in
+                    guard let from = r.from, let to = r.to else { return nil }
+                    return BellPeriod(number: index, start: from, end: to)
+                }
             }
 
             if let atts = await attsT {
@@ -243,18 +255,6 @@ final class DataRepository {
                         wasReadOnServer: a.wasRead
                     )
                 }.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
-            }
-
-            if let hw = await homeworkT {
-                homework = hw.map { h in
-                    HomeworkItem(
-                        id: h.id, topic: h.topic, text: h.text,
-                        dueDate: LibrusDate.fromYMD(h.dueDate),
-                        createdDate: LibrusDate.fromYMD(h.createdDate),
-                        teacher: h.teacher.flatMap { userByID[$0.id]?.displayName },
-                        subject: h.subject.flatMap { subjectByID[$0.id]?.name }
-                    )
-                }.sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
             }
 
             if let rawEvents = await eventsT {
@@ -300,7 +300,7 @@ final class DataRepository {
                 return TimetableDay(date: date, entries: entries)
             }
             timetableWeeks[key] = days
-            saveCache()
+            saveCache() // also republishes the widget feed
         } catch {
             if timetableWeeks[key] == nil {
                 handle(error, into: \.lastError)
@@ -322,8 +322,11 @@ final class DataRepository {
     }
 
     func loadMessageContent(_ id: Int) async -> MessagesClient.MessageContent? {
-        do { return try await messages.content(messageId: id) }
-        catch {
+        do {
+            let content = try await messages.content(messageId: id)
+            if !readMessageIDs.contains(id) { readMessageIDs.insert(id); saveCache() }
+            return content
+        } catch {
             handle(error, into: \.messagesError)
             return nil
         }
@@ -347,7 +350,11 @@ final class DataRepository {
     }
 
     func markAnnouncementRead(_ item: AnnouncementItem) {
-        readAnnouncementIDs.insert(item.id)
+        setAnnouncementRead(item, read: true)
+    }
+
+    func setAnnouncementRead(_ item: AnnouncementItem, read: Bool) {
+        if read { readAnnouncementIDs.insert(item.id) } else { readAnnouncementIDs.remove(item.id) }
         saveCache()
     }
 
@@ -355,7 +362,7 @@ final class DataRepository {
         announcements.filter { !isAnnouncementRead($0) }.count
     }
 
-    var unreadMessageCount: Int { messagesInbox.filter(\.isUnread).count }
+    var unreadMessageCount: Int { unreadMessageCountLocal }
 
     var upcomingEventCount: Int {
         events.filter { !$0.isPast }.count
@@ -450,6 +457,9 @@ final class DataRepository {
 
     private static func mapLesson(_ l: RawLesson) -> TimetableEntry? {
         guard let no = l.lessonNo, let from = l.hourFrom, let to = l.hourTo else { return nil }
+        let room = l.classroom?.name
+        let orgRoom = l.orgClassroom?.name
+
         var note: String?
         if l.isCancelled {
             note = "Lekcja odwołana"
@@ -463,10 +473,48 @@ final class DataRepository {
             id: "\(no)-\(from)", lessonNo: no, start: from, end: to,
             subject: l.subject?.name ?? "—",
             teacher: l.teacher?.displayName,
-            classroom: l.classroom?.name,
+            classroom: room,
+            originalClassroom: orgRoom,
             isCancelled: l.isCancelled,
             isSubstitution: l.isSubstitution,
             note: note
         )
+    }
+
+    // MARK: - Widget feed
+
+    private func upcomingDays() -> [SharedStore.WidgetTimetable.Day] {
+        let today = LibrusDate.today
+        let allDays = timetableWeeks.values.flatMap { $0 }
+            .filter { $0.date >= today && $0.date < LibrusDate.addDays(7, to: today) }
+            .sorted { $0.date < $1.date }
+        return allDays.prefix(5).map { day in
+            SharedStore.WidgetTimetable.Day(
+                date: day.date,
+                lessons: day.entries.map { e in
+                    SharedStore.WidgetTimetable.Lesson(
+                        id: e.id, lessonNo: e.lessonNo, start: e.start, end: e.end,
+                        subject: e.subject, room: e.classroom,
+                        isCancelled: e.isCancelled, isSubstitution: e.isSubstitution,
+                        roomChanged: e.roomChanged, note: e.note
+                    )
+                }
+            )
+        }
+    }
+
+    // MARK: - Message read tracking
+
+    func isMessageRead(_ m: MessageItem) -> Bool {
+        m.readDateServer != nil || readMessageIDs.contains(m.id)
+    }
+
+    func setMessageRead(_ m: MessageItem, read: Bool) {
+        if read { readMessageIDs.insert(m.id) } else { readMessageIDs.remove(m.id) }
+        saveCache()
+    }
+
+    var unreadMessageCountLocal: Int {
+        messagesInbox.filter { !isMessageRead($0) }.count
     }
 }

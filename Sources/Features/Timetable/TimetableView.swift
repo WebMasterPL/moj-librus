@@ -110,10 +110,9 @@ struct LessonRow: View {
                     .foregroundStyle(entry.isCancelled ? .secondary : .primary)
                 HStack(spacing: 8) {
                     if let teacher = entry.teacher { Text(teacher) }
-                    if let room = entry.classroom { Text("sala \(room)") }
+                    roomLabel
                 }
                 .font(.caption)
-                .foregroundStyle(.secondary)
                 if let note = entry.note {
                     Text(note)
                         .font(.caption2.bold())
@@ -123,5 +122,17 @@ struct LessonRow: View {
             Spacer()
         }
         .padding(.vertical, 2)
+    }
+
+    @ViewBuilder private var roomLabel: some View {
+        if let room = entry.classroom {
+            if entry.roomChanged, let org = entry.originalClassroom {
+                (Text("sala ") + Text(org).strikethrough() + Text(" → \(room)"))
+                    .foregroundStyle(.orange)
+                    .fontWeight(.semibold)
+            } else {
+                Text("sala \(room)").foregroundStyle(.secondary)
+            }
+        }
     }
 }

@@ -65,17 +65,12 @@ struct LibrusAPI {
         await soft(Librus.Path.attendanceTypes, as: RawAttendanceTypesResponse.self)?.types
     }
 
-    /// nil = keep the previous value (request failed or Librus has no lucky number).
-    func luckyNumber() async -> RawLuckyNumberResponse.Inner? {
-        await soft(Librus.Path.luckyNumber, as: RawLuckyNumberResponse.self)?.luckyNumber
-    }
-
     func announcements() async -> [RawAnnouncement]? {
         await soft(Librus.Path.schoolNotices, as: RawAnnouncementsResponse.self)?.announcements
     }
 
-    func homework() async -> [RawHomework]? {
-        await soft(Librus.Path.homeworks, as: RawHomeworkResponse.self)?.items
+    func school() async -> RawSchool? {
+        await soft(Librus.Path.schools, as: RawSchoolResponse.self)?.school
     }
 
     /// nil = keep the previous value (request failed or no class data).

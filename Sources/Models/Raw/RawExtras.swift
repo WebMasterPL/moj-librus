@@ -89,6 +89,36 @@ struct RawNoteCategory: Decodable {
     }
 }
 
+// MARK: - School (bell schedule + name)
+
+struct RawSchoolResponse: Decodable {
+    let school: RawSchool?
+    enum CodingKeys: String, CodingKey { case school = "School" }
+}
+
+struct RawSchool: Decodable {
+    let name: String?
+    let town: String?
+    let lessonsRange: [RawLessonRange]
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name", town = "Town", lessonsRange = "LessonsRange"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try? c.decode(String.self, forKey: .name)
+        town = try? c.decode(String.self, forKey: .town)
+        lessonsRange = (try? c.decode([RawLessonRange].self, forKey: .lessonsRange)) ?? []
+    }
+}
+
+struct RawLessonRange: Decodable {
+    let from: String?
+    let to: String?
+    enum CodingKeys: String, CodingKey { case from = "From", to = "To" }
+}
+
 // MARK: - Calendar events (terminarz — HomeWorks endpoint, not homework)
 
 struct RawEventsResponse: Decodable {

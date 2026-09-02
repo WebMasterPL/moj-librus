@@ -21,14 +21,15 @@ struct MessagesView: View {
             }
 
             ForEach(repo.messagesInbox) { message in
+                let unread = !repo.isMessageRead(message)
                 NavigationLink(value: message) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            if message.isUnread {
+                            if unread {
                                 Circle().fill(.tint).frame(width: 8, height: 8)
                             }
                             Text(message.correspondent)
-                                .font(.callout.weight(message.isUnread ? .semibold : .regular))
+                                .font(.callout.weight(unread ? .semibold : .regular))
                             Spacer()
                             if message.hasAttachments {
                                 Image(systemName: "paperclip").font(.caption).foregroundStyle(.secondary)
@@ -42,6 +43,15 @@ struct MessagesView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
+                }
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        repo.setMessageRead(message, read: unread)
+                    } label: {
+                        Label(unread ? "Przeczytane" : "Nieprzeczytane",
+                              systemImage: unread ? "envelope.open" : "envelope.badge")
+                    }
+                    .tint(unread ? .accentColor : .gray)
                 }
             }
         }

@@ -64,9 +64,16 @@ struct TimetableEntry: Identifiable, Codable, Hashable {
     let subject: String
     let teacher: String?
     let classroom: String?
+    /// Set only when the room differs from the originally planned one.
+    let originalClassroom: String?
     let isCancelled: Bool
     let isSubstitution: Bool
     let note: String?
+
+    var roomChanged: Bool {
+        guard let originalClassroom, let classroom else { return false }
+        return !originalClassroom.isEmpty && originalClassroom != classroom
+    }
 
     var startMinutes: Int? { LibrusDate.minutesOfDay(start) }
     var endMinutes: Int? { LibrusDate.minutesOfDay(end) }
@@ -150,16 +157,6 @@ struct AnnouncementItem: Identifiable, Codable, Hashable {
     let wasReadOnServer: Bool
 }
 
-struct HomeworkItem: Identifiable, Codable, Hashable {
-    let id: Int
-    let topic: String
-    let text: String
-    let dueDate: Date?
-    let createdDate: Date?
-    let teacher: String?
-    let subject: String?
-}
-
 struct CalendarEvent: Identifiable, Codable, Hashable {
     let id: Int
     let date: Date?
@@ -176,9 +173,11 @@ struct CalendarEvent: Identifiable, Codable, Hashable {
     }
 }
 
-struct LuckyNumberInfo: Codable, Hashable {
+struct BellPeriod: Identifiable, Codable, Hashable {
+    var id: Int { number }
     let number: Int
-    let day: Date?
+    let start: String
+    let end: String
 }
 
 // MARK: - Behaviour notes (uwagi)

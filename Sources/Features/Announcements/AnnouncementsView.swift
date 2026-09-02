@@ -9,14 +9,15 @@ struct AnnouncementsView: View {
                 EmptyStateView(systemImage: "megaphone", title: "Brak ogłoszeń")
             }
             ForEach(repo.announcements) { item in
+                let read = repo.isAnnouncementRead(item)
                 NavigationLink(value: item) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            if !repo.isAnnouncementRead(item) {
+                            if !read {
                                 Circle().fill(.tint).frame(width: 8, height: 8)
                             }
                             Text(item.subject.isEmpty ? "(bez tematu)" : item.subject)
-                                .font(.callout.weight(repo.isAnnouncementRead(item) ? .regular : .semibold))
+                                .font(.callout.weight(read ? .regular : .semibold))
                                 .lineLimit(2)
                         }
                         HStack(spacing: 8) {
@@ -26,6 +27,15 @@ struct AnnouncementsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
+                }
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        repo.setAnnouncementRead(item, read: !read)
+                    } label: {
+                        Label(read ? "Nieprzeczytane" : "Przeczytane",
+                              systemImage: read ? "envelope.badge" : "envelope.open")
+                    }
+                    .tint(read ? .gray : .accentColor)
                 }
             }
         }

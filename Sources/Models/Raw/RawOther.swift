@@ -40,28 +40,6 @@ struct RawAttendance: Decodable {
     }
 }
 
-// MARK: - Lucky number
-
-struct RawLuckyNumberResponse: Decodable {
-    let luckyNumber: Inner?
-    enum CodingKeys: String, CodingKey { case luckyNumber = "LuckyNumber" }
-
-    struct Inner: Decodable {
-        let day: String?
-        let number: Int?
-
-        enum CodingKeys: String, CodingKey {
-            case day = "LuckyNumberDay", number = "LuckyNumber"
-        }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            day = try? c.decode(String.self, forKey: .day)
-            number = c.decodeFlexInt(.number)
-        }
-    }
-}
-
 // MARK: - Announcements (SchoolNotices)
 
 struct RawAnnouncementsResponse: Decodable {
@@ -97,41 +75,5 @@ struct RawAnnouncement: Decodable {
         creationDate = try? c.decode(String.self, forKey: .creationDate)
         addedBy = try? c.decode(Ref.self, forKey: .addedBy)
         wasRead = (try? c.decode(Bool.self, forKey: .wasRead)) ?? false
-    }
-}
-
-// MARK: - Homework (HomeWorkAssignments)
-
-struct RawHomeworkResponse: Decodable {
-    let items: [RawHomework]
-    enum CodingKeys: String, CodingKey { case items = "HomeWorkAssignments" }
-}
-
-struct RawHomework: Decodable {
-    let id: Int
-    let topic: String
-    let text: String
-    let dueDate: String?
-    let createdDate: String?
-    let teacher: Ref?
-    let subject: Ref?
-    let category: Ref?
-
-    enum CodingKeys: String, CodingKey {
-        case id = "Id", topic = "Topic", text = "Text"
-        case dueDate = "DueDate", date = "Date"
-        case teacher = "Teacher", subject = "Subject", category = "Category"
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = c.decodeFlexInt(.id) ?? -1
-        topic = (try? c.decode(String.self, forKey: .topic)) ?? ""
-        text = (try? c.decode(String.self, forKey: .text)) ?? ""
-        dueDate = try? c.decode(String.self, forKey: .dueDate)
-        createdDate = try? c.decode(String.self, forKey: .date)
-        teacher = try? c.decode(Ref.self, forKey: .teacher)
-        subject = try? c.decode(Ref.self, forKey: .subject)
-        category = try? c.decode(Ref.self, forKey: .category)
     }
 }

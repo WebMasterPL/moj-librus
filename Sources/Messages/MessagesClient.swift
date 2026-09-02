@@ -1,63 +1,65 @@
 import Foundation
 
-/// Read-only access to the Librus message inbox.
+/// Read-only + reply access to the Librus message inbox.
 ///
-/// Librus messages are NOT part of the clean 2.0 API. They live on
-/// `wiadomosci.librus.pl` behind the Synergia web session, so we:
-///   1. POST `2.0/AutoLoginToken` (bearer) -> one-time token
-///   2. GET `synergia.librus.pl/loguj/token/<T>/przenies/...` -> sets `DZIENNIKSID`
-///   3. POST XML to `wiadomosci.librus.pl/module/<Module>` with that cookie
-///
-/// This bridge is the most fragile part of the app; failures here are reported
-/// separately and never block grades/timetable/etc.
+/// Messages are NOT part of the clean 2.0 API. They live on `wiadomosci.librus.pl`
+/// behind a Synergia web session:
+///   1. POST `2.0/AutoLoginToken` (bearer)                       -> one-time token
+///   2. GET `synergia.librus.pl/loguj/token/<T>/przenies/...`    -> sets `DZIENNIKSID`
+///   3. POST XML to `wiadomosci.librus.pl/module/<Module>` sending that cookie
+///      **explicitly** (it's a host-only cookie for synergia, not wiadomosci).
 actor MessagesClient {
     private let session: LibrusSession
     private let http: URLSession
-    private let cookieStorage: HTTPCookieStorage
+    private var dzienniksid: String?
     private var sessionEstablishedAt: Date?
 
     init(session: LibrusSession) {
         self.session = session
-        let storage = HTTPCookieStorage()
-        let config = URLSessionConfiguration.default
-        config.httpCookieStorage = storage
+        let config = URLSessionConfiguration.ephemeral
         config.httpCookieAcceptPolicy = .always
         config.httpShouldSetCookies = true
         config.timeoutIntervalForRequest = 30
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.httpAdditionalHeaders = ["User-Agent": Librus.browserUserAgent]
-        self.cookieStorage = storage
         self.http = URLSession(configuration: config)
     }
+
+    // MARK: - Public API
 
     func inbox() async throws -> [MessageItem] {
         try await ensureSession()
         let xml = try await postModule("Inbox/action/GetList", data: ["archive": "0"])
         guard let root = XMLTreeNode.parse(xml) else {
-            throw APIError.messageBridgeFailed("nie udało się odczytać XML listy")
+            throw APIError.messageBridgeFailed("nieczytelny XML listy: " + snippet(xml))
         }
-        guard let dataNode = root.firstNode(path: ["GetList", "data"])
-            ?? root.firstNode(path: ["response", "GetList", "data"])
-            ?? findFirst(root, named: "data") else {
-            throw APIError.messageBridgeFailed("brak węzła <data> w odpowiedzi")
+        guard let listNode = firstNode(root, named: "GetList") ?? firstNode(root, named: "data"),
+              let dataNode = (listNode.name.caseInsensitiveCompare("data") == .orderedSame
+                              ? listNode : firstNode(listNode, named: "data")) else {
+            throw APIError.messageBridgeFailed("brak <data> w liście: " + snippet(xml))
         }
 
-        return dataNode.children.compactMap { el in
+        let rows = dataNode.children.isEmpty ? [dataNode] : dataNode.children
+        let items: [MessageItem] = rows.compactMap { el in
             guard let idText = el.childText("messageId") ?? el.childText("id"),
                   let id = Int(idText.filter(\.isNumber)) else { return nil }
-            let subject = el.childText("topic") ?? el.childText("subject") ?? "(bez tematu)"
-            let sent = LibrusDate.fromISO(el.childText("sendDate"))
-            let read = LibrusDate.fromISO(el.childText("readDate"))
-            let first = el.childText("senderFirstName") ?? el.childText("firstname") ?? ""
-            let last = el.childText("senderLastName") ?? el.childText("lastname") ?? ""
+            let first = (el.childText("senderFirstName") ?? el.childText("firstName") ?? "")
+            let last = (el.childText("senderLastName") ?? el.childText("lastName") ?? "")
             let correspondent = "\(first) \(last)".trimmingCharacters(in: .whitespaces)
-            let hasAttach = (el.childText("isAnyFileAttached") ?? "0") == "1"
             return MessageItem(
-                id: id, subject: subject,
+                id: id,
+                subject: el.childText("topic") ?? el.childText("subject") ?? "(bez tematu)",
                 correspondent: correspondent.isEmpty ? "Librus" : correspondent,
-                sentDate: sent, readDateServer: read, hasAttachments: hasAttach, body: nil
+                sentDate: LibrusDate.fromISO(el.childText("sendDate") ?? el.childText("senddate")),
+                readDateServer: LibrusDate.fromISO(el.childText("readDate") ?? el.childText("readdate")),
+                hasAttachments: (el.childText("isAnyFileAttached") ?? "0") == "1",
+                body: nil
             )
         }
+        if items.isEmpty && !dataNode.children.isEmpty {
+            throw APIError.messageBridgeFailed("nie rozpoznałem pól wiadomości: " + snippet(xml))
+        }
+        return items
     }
 
     struct MessageContent: Sendable {
@@ -71,17 +73,16 @@ actor MessagesClient {
             "messageId": String(messageId), "archive": "0",
         ])
         guard let root = XMLTreeNode.parse(xml),
-              let dataNode = root.firstNode(path: ["response", "GetMessage", "data"])
-                ?? root.firstNode(path: ["GetMessage", "data"])
-                ?? findFirst(root, named: "data") else {
-            throw APIError.messageBridgeFailed("nie udało się odczytać treści wiadomości")
+              let dataNode = firstNode(root, named: "data")
+                ?? firstNode(root, named: "GetMessage") else {
+            throw APIError.messageBridgeFailed("nieczytelna treść: " + snippet(xml))
         }
         let rawMessage = dataNode.childText("Message") ?? dataNode.childText("message") ?? ""
         let senderLoginId = dataNode.childText("senderId") ?? dataNode.childText("senderid")
 
         let text: String
         if let decoded = Data(base64Encoded: rawMessage.filter { !$0.isWhitespace }),
-           let decodedText = String(data: decoded, encoding: .utf8) {
+           let decodedText = String(data: decoded, encoding: .utf8), !decodedText.isEmpty {
             text = cleanup(decodedText)
         } else {
             text = cleanup(rawMessage)
@@ -89,40 +90,37 @@ actor MessagesClient {
         return MessageContent(text: text, senderLoginId: senderLoginId)
     }
 
-    /// Sends a message. Returns the new message id on success, throws otherwise.
     @discardableResult
     func send(recipientLoginIds: [String], subject: String, body: String) async throws -> Int {
         guard !recipientLoginIds.isEmpty else {
             throw APIError.messageBridgeFailed("brak odbiorcy")
         }
         try await ensureSession()
-        let params = [
+        let xml = try await postModule("SendMessage", data: [
             "topic": Data(subject.utf8).base64EncodedString(),
             "message": Data(body.utf8).base64EncodedString(),
             "receivers": recipientLoginIds.joined(separator: ","),
             "actions": Data("<Actions/>".utf8).base64EncodedString(),
-        ]
-        let xml = try await postModule("SendMessage", data: params)
+        ])
         guard let root = XMLTreeNode.parse(xml),
-              let node = root.firstNode(path: ["response", "SendMessage"])
-                ?? findFirst(root, named: "SendMessage") else {
-            throw APIError.messageBridgeFailed("nieczytelna odpowiedź na wysyłkę")
+              let node = firstNode(root, named: "SendMessage") ?? firstNode(root, named: "data") else {
+            throw APIError.messageBridgeFailed("nieczytelna odpowiedź wysyłki: " + snippet(xml))
         }
         let status = (node.childText("status") ?? "").lowercased()
-        // Trust `status` — if it says ok, the message went out even if we can't read the id.
-        guard status == "ok" else {
-            throw APIError.messageBridgeFailed(node.childText("message") ?? "wysyłka odrzucona przez Librus")
+        guard status == "ok" || status.isEmpty else {
+            throw APIError.messageBridgeFailed(node.childText("message") ?? "wysyłka odrzucona")
         }
-        let newId = (node.firstNode(path: ["data"])?.text).flatMap { Int($0.filter(\.isNumber)) }
-            ?? node.childText("data").flatMap { Int($0.filter(\.isNumber)) }
-        return newId ?? 0
+        let newId = firstNode(node, named: "data")?.text.filter(\.isNumber)
+        return Int(newId ?? "") ?? 0
     }
 
     // MARK: - Session bridge
 
     private func ensureSession() async throws {
-        if let at = sessionEstablishedAt, Date().timeIntervalSince(at) < 30 * 60 { return }
+        if let at = sessionEstablishedAt, dzienniksid != nil,
+           Date().timeIntervalSince(at) < 25 * 60 { return }
 
+        var trail = "AutoLoginToken"
         let token = try await autoLoginToken()
 
         let path = Librus.synergiaTokenLoginPath.replacingOccurrences(of: "TOKEN", with: token)
@@ -133,74 +131,112 @@ actor MessagesClient {
         var request = URLRequest(url: url)
         request.setValue(Librus.browserUserAgent, forHTTPHeaderField: "User-Agent")
 
-        let response: URLResponse
+        let status: Int
+        let finalURL: String
+        let bodyText: String
         do {
-            let (_, resp) = try await http.data(for: request)
-            response = resp
+            let (data, resp) = try await http.data(for: request)
+            let httpResp = resp as? HTTPURLResponse
+            status = httpResp?.statusCode ?? 0
+            finalURL = httpResp?.url?.absoluteString ?? ""
+            bodyText = String(data: data, encoding: .utf8) ?? ""
         } catch {
-            throw APIError.messageBridgeFailed(error.localizedDescription)
+            throw APIError.messageBridgeFailed("\(trail) → synergia: \(error.localizedDescription)")
         }
+        trail += " → synergia [\(status)]"
 
-        let finalURL = (response as? HTTPURLResponse)?.url?.absoluteString ?? ""
-        let hasCookie = cookieStorage.cookies?.contains { $0.name == "DZIENNIKSID" } ?? false
+        // Pull DZIENNIKSID from wherever URLSession stashed it (synergia host cookie).
+        let jar = http.configuration.httpCookieStorage
+        let sid = jar?.cookies?.first(where: { $0.name == "DZIENNIKSID" })?.value
 
-        guard hasCookie || finalURL.contains("centrum_powiadomien") else {
-            throw APIError.messageBridgeFailed("logowanie do Synergii nie powiodło się")
+        guard let sid, !sid.isEmpty else {
+            if bodyText.contains("przerwa_techniczna") { throw APIError.maintenance }
+            throw APIError.messageBridgeFailed(
+                "\(trail): brak DZIENNIKSID (URL: \(shortPath(finalURL)), \(bodyText.count) B)")
         }
+        dzienniksid = sid
         sessionEstablishedAt = Date()
     }
 
     private func autoLoginToken() async throws -> String {
-        let data = try await session.authorizedData(path: Librus.Path.autoLoginToken, method: "POST")
+        let data: Data
+        do {
+            data = try await session.authorizedData(path: Librus.Path.autoLoginToken, method: "POST")
+        } catch {
+            throw APIError.messageBridgeFailed("AutoLoginToken: "
+                + ((error as? LocalizedError)?.errorDescription ?? "\(error)"))
+        }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = (obj["Token"] as? String) ?? (obj["token"] as? String) else {
-            throw APIError.messageBridgeFailed("brak AutoLoginToken w odpowiedzi API")
+              let token = (obj["Token"] as? String) ?? (obj["token"] as? String), !token.isEmpty else {
+            throw APIError.messageBridgeFailed("brak Token w odpowiedzi AutoLoginToken: " + snippet(data))
         }
         return token
     }
 
     private func postModule(_ module: String, data: [String: String]) async throws -> Data {
-        let url = Librus.messagesModuleBase.appendingPathComponent(module)
+        guard let url = URL(string: Librus.messagesModuleBase.absoluteString + "/" + module) else {
+            throw APIError.messageBridgeFailed("zły adres modułu")
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         request.setValue(Librus.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        if let sid = dzienniksid {
+            request.setValue("DZIENNIKSID=\(sid)", forHTTPHeaderField: "Cookie")
+        }
         request.httpBody = Data(Self.buildRequestXML(data).utf8)
+
         do {
             let (body, response) = try await http.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let text = String(data: body, encoding: .utf8) ?? ""
-            if status >= 500 || text.contains("OffLine") {
+
+            if status >= 500 || text.contains("OffLine") || text.contains("przerwa_techniczna") {
                 throw APIError.maintenance
             }
-            if text.contains("eAccessDeny") || text.contains("stop.png") {
-                throw APIError.messageBridgeFailed("brak dostępu do modułu wiadomości")
-            }
-            // Got an HTML page instead of XML -> the Synergia session lapsed.
-            let looksLikeXML = text.contains("<service") || text.contains("<response") || text.contains("<data")
-            if !looksLikeXML, text.localizedCaseInsensitiveContains("<html") || text.localizedCaseInsensitiveContains("login") {
+            if text.contains("eAccessDeny") || text.contains("stop.png")
+                || text.contains("Niepoprawny login") {
                 sessionEstablishedAt = nil
-                throw APIError.messageBridgeFailed("sesja Synergii wygasła — spróbuj ponownie")
+                throw APIError.messageBridgeFailed("brak dostępu do modułu (sesja?): " + snippet(body))
+            }
+            let looksLikeXML = text.contains("<response") || text.contains("<service")
+                || text.contains("<data") || text.contains("<ArrayItem")
+            if !looksLikeXML {
+                sessionEstablishedAt = nil
+                throw APIError.messageBridgeFailed("moduł \(module) nie zwrócił XML [\(status)]: " + snippet(body))
             }
             return body
         } catch let e as APIError {
             throw e
         } catch {
-            throw APIError.messageBridgeFailed(error.localizedDescription)
+            throw APIError.messageBridgeFailed("\(module): \(error.localizedDescription)")
         }
     }
+
+    // MARK: - Helpers
 
     private static func buildRequestXML(_ data: [String: String]) -> String {
         let inner = data.map { "<\($0.key)>\($0.value)</\($0.key)>" }.joined()
         return "<service><header></header><data>\(inner)</data></service>"
     }
 
-    private func findFirst(_ node: XMLTreeNode, named name: String) -> XMLTreeNode? {
+    private func firstNode(_ node: XMLTreeNode, named name: String) -> XMLTreeNode? {
         if node.name.caseInsensitiveCompare(name) == .orderedSame { return node }
         for child in node.children {
-            if let found = findFirst(child, named: name) { return found }
+            if let found = firstNode(child, named: name) { return found }
         }
         return nil
+    }
+
+    private func snippet(_ data: Data) -> String { snippet(String(data: data, encoding: .utf8) ?? "") }
+    private func snippet(_ text: String) -> String {
+        let flat = text.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+        return String(flat.prefix(180))
+    }
+
+    private func shortPath(_ url: String) -> String {
+        URLComponents(string: url)?.path ?? url
     }
 
     private func cleanup(_ html: String) -> String {

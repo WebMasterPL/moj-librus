@@ -33,7 +33,6 @@ struct DashboardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                luckyNumberCard
                 nextLessonsCard
                 nextEventCard
                 recentGradesCard
@@ -67,28 +66,6 @@ struct DashboardView: View {
         }
     }
 
-    private var luckyNumberCard: some View {
-        Card {
-            HStack(spacing: 16) {
-                Image(systemName: "clover.fill")
-                    .font(.title)
-                    .foregroundStyle(.green)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Szczęśliwy numerek").font(.subheadline).foregroundStyle(.secondary)
-                    if let lucky = repo.luckyNumber {
-                        Text("\(lucky.number)").font(.title.bold())
-                        if let day = lucky.day {
-                            Text(day.dayMonthYear).font(.caption).foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Text("brak danych").font(.title3).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-            }
-        }
-    }
-
     private var upcomingEntries: [TimetableEntry] {
         let now = LibrusDate.nowMinutesOfDay
         let relevant = todayEntries.filter { $0.isOngoing(nowMinutes: now) || $0.isUpcoming(nowMinutes: now) }
@@ -116,7 +93,9 @@ struct DashboardView: View {
                             if ongoing {
                                 Text("teraz").font(.caption2.bold()).foregroundStyle(.tint)
                             } else if let room = entry.classroom {
-                                Text(room).font(.caption).foregroundStyle(.secondary)
+                                Text(entry.roomChanged ? "→ \(room)" : room)
+                                    .font(.caption)
+                                    .foregroundStyle(entry.roomChanged ? .orange : .secondary)
                             }
                         }
                     }
@@ -181,7 +160,7 @@ struct DashboardView: View {
     private var countersRow: some View {
         HStack(spacing: 12) {
             counter(value: repo.unreadAnnouncementCount, label: "Ogłoszenia", system: "megaphone.fill")
-            counter(value: repo.homework.count, label: "Zadania", system: "book.closed.fill")
+            counter(value: repo.upcomingEventCount, label: "Terminarz", system: "calendar.badge.clock")
             counter(value: repo.unreadMessageCount, label: "Wiadomości", system: "envelope.fill")
         }
     }

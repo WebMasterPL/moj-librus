@@ -37,12 +37,14 @@ struct RawLesson: Decodable {
     let orgDate: String?
     let orgSubject: NamedRef?
     let orgTeacher: PersonRef?
+    let orgClassroom: NamedRef?
 
     enum CodingKeys: String, CodingKey {
         case lessonNo = "LessonNo", hourFrom = "HourFrom", hourTo = "HourTo"
         case subject = "Subject", teacher = "Teacher", classroom = "Classroom"
         case isSubstitution = "IsSubstitutionClass", isCancelled = "IsCanceled"
         case orgDate = "OrgDate", orgSubject = "OrgSubject", orgTeacher = "OrgTeacher"
+        case orgClassroom = "OrgClassroom"
     }
 
     init(from decoder: Decoder) throws {
@@ -58,6 +60,7 @@ struct RawLesson: Decodable {
         orgDate = try? c.decode(String.self, forKey: .orgDate)
         orgSubject = try? c.decode(NamedRef.self, forKey: .orgSubject)
         orgTeacher = try? c.decode(PersonRef.self, forKey: .orgTeacher)
+        orgClassroom = try? c.decode(NamedRef.self, forKey: .orgClassroom)
     }
 }
 

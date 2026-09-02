@@ -38,12 +38,6 @@ struct MoreView: View {
                         .badge(repo.unreadAnnouncementCount)
                 }
                 NavigationLink {
-                    HomeworkView()
-                } label: {
-                    Label("Zadania domowe", systemImage: "book.closed.fill")
-                        .badge(repo.homework.count)
-                }
-                NavigationLink {
                     EventsView()
                 } label: {
                     Label("Terminarz", systemImage: "calendar.badge.clock")
@@ -63,6 +57,11 @@ struct MoreView: View {
                 }
             }
             Section {
+                NavigationLink {
+                    BellScheduleView()
+                } label: {
+                    Label("Rozkład dzwonków", systemImage: "bell.fill")
+                }
                 NavigationLink {
                     SettingsView()
                 } label: {
