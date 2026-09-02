@@ -133,7 +133,6 @@ final class DataRepository {
         )
         Cache.save(snap, as: "snapshot")
         Cache.save(timetableWeeks, as: "timetable")
-        SharedStore.publishTimetable(upcomingDays())
     }
 
     func clearLocal() {
@@ -144,6 +143,7 @@ final class DataRepository {
         bellSchedule = []; schoolName = nil
         SeenGrades.reset()
         SharedStore.clear()
+        WidgetRefresher.reload()
         timetableWeeks = [:]; lastSync = nil
     }
 
@@ -300,7 +300,9 @@ final class DataRepository {
                 return TimetableDay(date: date, entries: entries)
             }
             timetableWeeks[key] = days
-            saveCache() // also republishes the widget feed
+            saveCache()
+            SharedStore.publishTimetable(upcomingDays())
+            WidgetRefresher.reload()
         } catch {
             if timetableWeeks[key] == nil {
                 handle(error, into: \.lastError)

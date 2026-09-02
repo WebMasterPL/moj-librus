@@ -1,18 +1,15 @@
 import Foundation
 
-/// Data shared with the widget extension via an App Group. Degrades to a no-op
-/// when the App Group isn't provisioned (e.g. before entitlements are set up).
+/// Data shared between the app and the widget extension via an App Group.
+/// Degrades to a no-op when the App Group isn't provisioned.
 enum SharedStore {
     static let appGroup = "group.com.olekd.mojlibrus"
     private static let timetableKey = "widget.timetable.v1"
 
-    private static var defaults: UserDefaults? {
-        UserDefaults(suiteName: appGroup)
-    }
+    private static var defaults: UserDefaults? { UserDefaults(suiteName: appGroup) }
 
-    /// A trimmed timetable payload for the widget: the next few days, lessons only.
     struct WidgetTimetable: Codable {
-        struct Lesson: Codable, Identifiable {
+        struct Lesson: Codable, Identifiable, Hashable {
             var id: String
             var lessonNo: Int
             var start: String
@@ -24,7 +21,7 @@ enum SharedStore {
             var roomChanged: Bool
             var note: String?
         }
-        struct Day: Codable, Identifiable {
+        struct Day: Codable, Identifiable, Hashable {
             var id: Date { date }
             var date: Date
             var lessons: [Lesson]
@@ -39,7 +36,6 @@ enum SharedStore {
         if let data = try? JSONEncoder().encode(payload) {
             defaults.set(data, forKey: timetableKey)
         }
-        WidgetRefresher.reload()
     }
 
     static func loadTimetable() -> WidgetTimetable? {
@@ -49,6 +45,5 @@ enum SharedStore {
 
     static func clear() {
         defaults?.removeObject(forKey: timetableKey)
-        WidgetRefresher.reload()
     }
 }
