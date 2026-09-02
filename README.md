@@ -22,14 +22,19 @@ przez **SideStore/AltStore** darmowym Apple ID.
 | Plan lekcji — tydzień, zastępstwa, odwołania, znacznik „dziś" | `.../2.0/Timetables` |
 | Frekwencja — podsumowanie % + wpisy, filtr semestru | `.../2.0/Attendances` |
 | Ogłoszenia | `.../2.0/SchoolNotices` |
-| Zadania domowe | `.../2.0/HomeWorkAssignments` |
 | Terminarz (sprawdziany, kartkówki) | `.../2.0/HomeWorks` |
 | Uwagi | `.../2.0/Notes` |
-| Szczęśliwy numerek | `.../2.0/LuckyNumbers` |
+| Rozkład dzwonków (godziny lekcji) | `.../2.0/Schools` (`LessonsRange`) |
 | Wiadomości — odczyt **i odpowiadanie** (*best-effort*) | mostek `synergia.librus.pl` → `wiadomosci.librus.pl` |
+| **Widżet** planu lekcji (zastępstwa, odwołania, zmiany sal) — small/medium/large | App Group |
 | Logowanie | `portal.librus.pl` OAuth → `api/v3/SynergiaAccounts` → Bearer per konto |
 | Ustawienia → **Diagnostyka połączenia** — test każdego endpointu + kopiuj raport | — |
 | Powiadomienia o nowych ocenach (opcjonalne, *eksperymentalne*) | `BGAppRefreshTask` |
+
+Ogłoszenia i wiadomości: **swipe od lewej = przeczytane/nieprzeczytane** (jak w Mail).
+Plan lekcji jasno pokazuje **zmianę sali** („sala 12 → 204"). Widżet wymaga App Group;
+przy sideloadzie SideStore sam przepisuje identyfikator grupy — jeśli widżet nie widzi
+danych, otwórz raz aplikację i odśwież plan.
 
 Nowe oceny są oznaczane plakietką „nowe" + liczbą na zakładce (lokalne śledzenie, działa
 zawsze). Powiadomienia w tle to osobny przełącznik w Ustawieniach — iOS sam decyduje, kiedy
