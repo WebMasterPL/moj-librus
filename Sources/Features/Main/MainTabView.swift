@@ -44,6 +44,12 @@ struct MoreView: View {
                         .badge(repo.homework.count)
                 }
                 NavigationLink {
+                    EventsView()
+                } label: {
+                    Label("Terminarz", systemImage: "calendar.badge.clock")
+                        .badge(repo.upcomingEventCount)
+                }
+                NavigationLink {
                     NotesView()
                 } label: {
                     Label("Uwagi", systemImage: "note.text")

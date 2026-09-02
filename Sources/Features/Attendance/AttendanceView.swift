@@ -16,6 +16,28 @@ struct AttendanceView: View {
         return s
     }
 
+    private struct SubjectAttendance: Identifiable {
+        let id = UUID()
+        let subject: String
+        let absent: Int
+        let excused: Int
+        let belated: Int
+    }
+
+    private var bySubject: [SubjectAttendance] {
+        let groups = Dictionary(grouping: items.filter { $0.subjectName != nil }) { $0.subjectName! }
+        return groups.map { name, entries in
+            SubjectAttendance(
+                subject: name,
+                absent: entries.filter { $0.kind == .absent }.count,
+                excused: entries.filter { $0.kind == .absentExcused }.count,
+                belated: entries.filter { $0.kind == .belated }.count
+            )
+        }
+        .filter { $0.absent + $0.excused + $0.belated > 0 }
+        .sorted { ($0.absent + $0.belated) > ($1.absent + $1.belated) }
+    }
+
     var body: some View {
         List {
             Section {
@@ -45,7 +67,29 @@ struct AttendanceView: View {
                     EmptyStateView(systemImage: "person.crop.circle.badge.checkmark",
                                    title: "Brak wpisów frekwencji")
                 }
-            } else {
+            }
+
+            if !bySubject.isEmpty {
+                Section("Wg przedmiotów") {
+                    ForEach(bySubject) { row in
+                        HStack {
+                            Text(row.subject).font(.callout)
+                            Spacer()
+                            if row.absent > 0 {
+                                tag("\(row.absent) nb", .red)
+                            }
+                            if row.excused > 0 {
+                                tag("\(row.excused) u", .orange)
+                            }
+                            if row.belated > 0 {
+                                tag("\(row.belated) sp", .yellow)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !items.isEmpty {
                 Section("Wpisy") {
                     ForEach(items) { item in
                         HStack(spacing: 12) {
@@ -74,6 +118,14 @@ struct AttendanceView: View {
         }
         .navigationTitle("Frekwencja")
         .refreshable { await repo.refreshCore() }
+    }
+
+    private func tag(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption2.bold())
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundStyle(color)
     }
 
     private func statTile(_ label: String, value: String, color: Color) -> some View {

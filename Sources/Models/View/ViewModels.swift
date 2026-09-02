@@ -160,6 +160,22 @@ struct HomeworkItem: Identifiable, Codable, Hashable {
     let subject: String?
 }
 
+struct CalendarEvent: Identifiable, Codable, Hashable {
+    let id: Int
+    let date: Date?
+    let content: String
+    let category: String?
+    let subject: String?
+    let teacher: String?
+    let lessonNo: Int?
+    let time: String?
+
+    var isPast: Bool {
+        guard let date else { return false }
+        return date < LibrusDate.today
+    }
+}
+
 struct LuckyNumberInfo: Codable, Hashable {
     let number: Int
     let day: Date?

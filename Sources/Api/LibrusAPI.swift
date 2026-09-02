@@ -91,6 +91,14 @@ struct LibrusAPI {
         await soft(Librus.Path.noteCategories, as: RawNoteCategoriesResponse.self)?.categories
     }
 
+    func events() async -> [RawEvent]? {
+        await soft(Librus.Path.events, as: RawEventsResponse.self)?.events
+    }
+
+    func eventCategories() async -> [RawEventCategory]? {
+        await soft(Librus.Path.eventCategories, as: RawEventCategoriesResponse.self)?.categories
+    }
+
     func timetable(weekStart: Date) async throws -> [String: [[RawLesson]]] {
         let path = Librus.Path.timetable(weekStart: LibrusDate.ymdString(weekStart))
         return try await get(path, as: RawTimetableResponse.self).days

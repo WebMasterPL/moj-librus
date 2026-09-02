@@ -28,6 +28,7 @@ struct Diagnostics {
             ("LuckyNumbers", Librus.Path.luckyNumber),
             ("SchoolNotices", Librus.Path.schoolNotices),
             ("HomeWorkAssignments", Librus.Path.homeworks),
+            ("HomeWorks (terminarz)", Librus.Path.events),
             ("Notes", Librus.Path.notes),
         ]
 

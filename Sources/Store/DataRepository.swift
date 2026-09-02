@@ -20,6 +20,7 @@ final class DataRepository {
     var attendanceItems: [AttendanceItem] = []
     var announcements: [AnnouncementItem] = []
     var homework: [HomeworkItem] = []
+    var events: [CalendarEvent] = []
     var notes: [NoteItem] = []
     var messagesInbox: [MessageItem] = []
 
@@ -44,6 +45,7 @@ final class DataRepository {
     @ObservationIgnored private var rawLessons: [RawLessonDef] = []
     @ObservationIgnored private var rawAttTypes: [RawAttendanceType] = []
     @ObservationIgnored private var rawNoteCats: [RawNoteCategory] = []
+    @ObservationIgnored private var rawEventCats: [RawEventCategory] = []
 
     /// Locally-tracked "read" state for announcements (Librus has no student-side write here).
     private var readAnnouncementIDs: Set<String> = []
@@ -89,6 +91,7 @@ final class DataRepository {
         var attendanceItems: [AttendanceItem]
         var announcements: [AnnouncementItem]
         var homework: [HomeworkItem]
+        var events: [CalendarEvent]?
         var notes: [NoteItem]
         var messagesInbox: [MessageItem]
         var lastSync: Date?
@@ -105,6 +108,7 @@ final class DataRepository {
         attendanceItems = s.attendanceItems
         announcements = s.announcements
         homework = s.homework
+        events = s.events ?? []
         notes = s.notes
         messagesInbox = s.messagesInbox
         lastSync = s.lastSync
@@ -119,8 +123,8 @@ final class DataRepository {
             studentName: studentName, schoolYear: schoolYear, lucky: luckyNumber,
             subjectGrades: subjectGrades, attendanceSummary: attendanceSummary,
             attendanceItems: attendanceItems, announcements: announcements,
-            homework: homework, notes: notes, messagesInbox: messagesInbox, lastSync: lastSync,
-            readAnnouncementIDs: Array(readAnnouncementIDs)
+            homework: homework, events: events, notes: notes, messagesInbox: messagesInbox,
+            lastSync: lastSync, readAnnouncementIDs: Array(readAnnouncementIDs)
         )
         Cache.save(snap, as: "snapshot")
         Cache.save(timetableWeeks, as: "timetable")
@@ -130,7 +134,7 @@ final class DataRepository {
         Cache.clearAll()
         studentName = ""; schoolYear = .init(); luckyNumber = nil; subjectGrades = []
         attendanceSummary = .init(); attendanceItems = []
-        announcements = []; homework = []; notes = []; messagesInbox = []
+        announcements = []; homework = []; events = []; notes = []; messagesInbox = []
         SeenGrades.reset()
         timetableWeeks = [:]; lastSync = nil
     }
@@ -161,6 +165,8 @@ final class DataRepository {
             async let classesT = api.classes()
             async let notesT = api.notes()
             async let noteCategoriesT = api.noteCategories()
+            async let eventsT = api.events()
+            async let eventCategoriesT = api.eventCategories()
 
             let me = try await meT
 
@@ -172,6 +178,7 @@ final class DataRepository {
             if let v = await lessonsT { rawLessons = v }
             if let v = await attTypesT { rawAttTypes = v }
             if let v = await noteCategoriesT { rawNoteCats = v }
+            if let v = await eventCategoriesT { rawEventCats = v }
 
             let subjectByID = Dictionary(rawSubjects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let userByID = Dictionary(rawUsers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -180,6 +187,7 @@ final class DataRepository {
             let lessonByID = Dictionary(rawLessons.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let attTypeByID = Dictionary(rawAttTypes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let noteCatByID = Dictionary(rawNoteCats.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let eventCatByID = Dictionary(rawEventCats.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
             studentName = me.displayName
 
@@ -247,6 +255,19 @@ final class DataRepository {
                         subject: h.subject.flatMap { subjectByID[$0.id]?.name }
                     )
                 }.sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
+            }
+
+            if let rawEvents = await eventsT {
+                events = rawEvents.map { e in
+                    CalendarEvent(
+                        id: e.id, date: LibrusDate.fromYMD(e.date), content: e.content,
+                        category: e.category.flatMap { eventCatByID[$0.id]?.name },
+                        subject: e.subject.flatMap { subjectByID[$0.id]?.name },
+                        teacher: e.createdBy.flatMap { userByID[$0.id]?.displayName },
+                        lessonNo: e.lessonNo,
+                        time: e.timeFrom
+                    )
+                }.sorted { ($0.date ?? .distantFuture) < ($1.date ?? .distantFuture) }
             }
 
             lastSync = Date()
@@ -324,6 +345,15 @@ final class DataRepository {
     }
 
     var unreadMessageCount: Int { messagesInbox.filter(\.isUnread).count }
+
+    var upcomingEventCount: Int {
+        events.filter { !$0.isPast }.count
+    }
+
+    /// Nearest not-yet-past event, for the dashboard.
+    var nextEvent: CalendarEvent? {
+        events.filter { !$0.isPast }.min { ($0.date ?? .distantFuture) < ($1.date ?? .distantFuture) }
+    }
 
     // MARK: - Joining helpers
 

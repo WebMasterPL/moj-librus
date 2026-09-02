@@ -42,6 +42,22 @@ final class SemesterTests: XCTestCase {
         XCTAssertEqual(c.endFirstSemester, "2026-01-26")
     }
 
+    func testDecodeEvents() throws {
+        let json = """
+        { "HomeWorks": [
+          { "Id": 900, "Date": "2026-09-15", "Content": "Sprawdzian – funkcje",
+            "Category": { "Id": 2 }, "CreatedBy": { "Id": 9 }, "Subject": { "Id": 3 },
+            "LessonNo": 4, "TimeFrom": "10:40:00", "AddDate": "2026-09-01 12:00:00" }
+        ] }
+        """
+        let resp = try decoder.decode(RawEventsResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(resp.events.count, 1)
+        XCTAssertEqual(resp.events[0].id, 900)
+        XCTAssertEqual(resp.events[0].category?.id, 2)
+        XCTAssertEqual(resp.events[0].subject?.id, 3)
+        XCTAssertEqual(resp.events[0].lessonNo, 4)
+    }
+
     func testDecodeNotes() throws {
         let json = """
         { "Notes": [

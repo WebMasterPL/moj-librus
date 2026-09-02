@@ -88,3 +88,59 @@ struct RawNoteCategory: Decodable {
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
     }
 }
+
+// MARK: - Calendar events (terminarz — HomeWorks endpoint, not homework)
+
+struct RawEventsResponse: Decodable {
+    let events: [RawEvent]
+    enum CodingKeys: String, CodingKey { case events = "HomeWorks" }
+}
+
+struct RawEvent: Decodable {
+    let id: Int
+    let date: String?
+    let content: String
+    let category: Ref?
+    let createdBy: Ref?
+    let subject: Ref?
+    let lessonNo: Int?
+    let timeFrom: String?
+    let addDate: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id = "Id", date = "Date", content = "Content", category = "Category"
+        case createdBy = "CreatedBy", subject = "Subject", lessonNo = "LessonNo"
+        case timeFrom = "TimeFrom", addDate = "AddDate"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.decodeFlexInt(.id) ?? -1
+        date = try? c.decode(String.self, forKey: .date)
+        content = (try? c.decode(String.self, forKey: .content)) ?? ""
+        category = try? c.decode(Ref.self, forKey: .category)
+        createdBy = try? c.decode(Ref.self, forKey: .createdBy)
+        subject = try? c.decode(Ref.self, forKey: .subject)
+        lessonNo = c.decodeFlexInt(.lessonNo)
+        timeFrom = try? c.decode(String.self, forKey: .timeFrom)
+        addDate = try? c.decode(String.self, forKey: .addDate)
+    }
+}
+
+struct RawEventCategoriesResponse: Decodable {
+    let categories: [RawEventCategory]
+    enum CodingKeys: String, CodingKey { case categories = "Categories" }
+}
+
+struct RawEventCategory: Decodable {
+    let id: Int
+    let name: String
+
+    enum CodingKeys: String, CodingKey { case id = "Id", name = "Name" }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.decodeFlexInt(.id) ?? -1
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+    }
+}

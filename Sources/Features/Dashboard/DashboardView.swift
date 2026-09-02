@@ -35,6 +35,7 @@ struct DashboardView: View {
 
                 luckyNumberCard
                 nextLessonsCard
+                nextEventCard
                 recentGradesCard
                 countersRow
             }
@@ -119,6 +120,31 @@ struct DashboardView: View {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var nextEventCard: some View {
+        if let ev = repo.nextEvent {
+            Card {
+                HStack(spacing: 16) {
+                    Image(systemName: "calendar.badge.exclamationmark")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Najbliższy wpis w terminarzu")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(ev.content.isEmpty ? (ev.category ?? "wydarzenie") : ev.content)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(2)
+                        HStack(spacing: 8) {
+                            if let subject = ev.subject { Text(subject) }
+                            if let date = ev.date { Text(date.dayMonthShort) }
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
             }
         }

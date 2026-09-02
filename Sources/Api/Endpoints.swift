@@ -43,6 +43,8 @@ enum Librus {
         static let luckyNumber = "LuckyNumbers"
         static let schoolNotices = "SchoolNotices"
         static let homeworks = "HomeWorkAssignments"
+        static let events = "HomeWorks"
+        static let eventCategories = "HomeWorks/Categories"
         static let classes = "Classes"
         static let notes = "Notes"
         static let noteCategories = "Notes/Categories"
