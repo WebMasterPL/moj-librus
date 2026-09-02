@@ -42,19 +42,19 @@ struct AnnouncementsView: View {
         .navigationTitle("Ogłoszenia")
         .navigationDestination(for: AnnouncementItem.self) { item in
             AnnouncementDetailView(item: item)
-                .onAppear { repo.markAnnouncementRead(item) }
         }
         .refreshable { await repo.refreshCore() }
     }
 }
 
 struct AnnouncementDetailView: View {
+    @Environment(DataRepository.self) private var repo
     let item: AnnouncementItem
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text(item.subject).font(.title3.bold())
+                Text(item.subject.isEmpty ? "(bez tematu)" : item.subject).font(.title3.bold())
                 HStack(spacing: 8) {
                     if let author = item.author { Label(author, systemImage: "person") }
                     if let date = item.date { Label(date.dayMonthYear, systemImage: "calendar") }
@@ -62,7 +62,7 @@ struct AnnouncementDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 Divider()
-                Text(item.content)
+                Text(item.content.isEmpty ? "(brak treści)" : item.content)
                     .font(.body)
                     .textSelection(.enabled)
             }
@@ -71,5 +71,6 @@ struct AnnouncementDetailView: View {
         }
         .navigationTitle("Ogłoszenie")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear { repo.markAnnouncementRead(item) }
     }
 }

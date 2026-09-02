@@ -5,25 +5,33 @@ struct MainTabView: View {
 
     var body: some View {
         TabView {
-            NavigationStack { DashboardView() }
+            // Each tab's NavigationStack lives in its own view so that badge-count
+            // changes (which re-render MainTabView.body) don't reset navigation.
+            DashboardTab()
                 .tabItem { Label("Pulpit", systemImage: "house.fill") }
 
-            NavigationStack { GradesView() }
+            GradesTab()
                 .tabItem { Label("Oceny", systemImage: "checkmark.seal.fill") }
                 .badge(repo.unseenGradeCount)
 
-            NavigationStack { TimetableView() }
+            TimetableTab()
                 .tabItem { Label("Plan", systemImage: "calendar") }
 
-            NavigationStack { AttendanceView() }
+            AttendanceTab()
                 .tabItem { Label("Frekwencja", systemImage: "person.crop.circle.badge.checkmark") }
 
-            NavigationStack { MoreView() }
+            MoreTab()
                 .tabItem { Label("Więcej", systemImage: "ellipsis.circle.fill") }
                 .badge(repo.unreadAnnouncementCount + repo.unreadMessageCount)
         }
     }
 }
+
+private struct DashboardTab: View { var body: some View { NavigationStack { DashboardView() } } }
+private struct GradesTab: View { var body: some View { NavigationStack { GradesView() } } }
+private struct TimetableTab: View { var body: some View { NavigationStack { TimetableView() } } }
+private struct AttendanceTab: View { var body: some View { NavigationStack { AttendanceView() } } }
+private struct MoreTab: View { var body: some View { NavigationStack { MoreView() } } }
 
 struct MoreView: View {
     @Environment(DataRepository.self) private var repo

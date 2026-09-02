@@ -116,46 +116,63 @@ actor MessagesClient {
 
     // MARK: - Session bridge
 
+    func invalidateSession() { sessionEstablishedAt = nil; dzienniksid = nil }
+
     private func ensureSession() async throws {
         if let at = sessionEstablishedAt, dzienniksid != nil,
-           Date().timeIntervalSince(at) < 25 * 60 { return }
+           Date().timeIntervalSince(at) < 20 * 60 { return }
 
         var trail = "AutoLoginToken"
         let token = try await autoLoginToken()
 
+        // 1. Establish the Synergia web session from the API token.
         let path = Librus.synergiaTokenLoginPath.replacingOccurrences(of: "TOKEN", with: token)
-        let urlString = Librus.synergiaBase.absoluteString + path + "/uczen/widok/centrum_powiadomien"
+        let synergiaLogin = Librus.synergiaBase.absoluteString + path + "/uczen/widok/centrum_powiadomien"
+        _ = try? await get(synergiaLogin)
+        trail += " → synergia"
+
+        // 2. Bridge into the messages domain via /wiadomosci2. URLSession follows
+        //    synergia → wiadomosci.librus.pl (MultiDomainLogon → AutoLogon), and
+        //    wiadomosci.librus.pl sets its OWN DZIENNIKSID along the way.
+        let (bridgeData, bridgeResp) = try await get("https://synergia.librus.pl/wiadomosci2")
+        let bridgeBody = String(data: bridgeData, encoding: .utf8) ?? ""
+        let finalURL = bridgeResp?.url?.absoluteString ?? ""
+        trail += " → wiadomosci2 [\(bridgeResp?.statusCode ?? 0)] \(shortPath(finalURL))"
+
+        if bridgeBody.contains("grecaptcha") || bridgeBody.contains("g-recaptcha") {
+            throw APIError.captchaNeeded
+        }
+        if bridgeBody.contains("przerwa_techniczna") || bridgeBody.contains("OffLine") {
+            throw APIError.maintenance
+        }
+
+        let jar = http.configuration.httpCookieStorage
+        let all = jar?.cookies ?? []
+        let sid = all.first(where: { $0.name == "DZIENNIKSID" && $0.domain.contains("wiadomosci") })?.value
+            ?? all.first(where: { $0.name == "DZIENNIKSID" })?.value
+
+        guard var sid, !sid.isEmpty else {
+            throw APIError.messageBridgeFailed("\(trail): brak DZIENNIKSID wiadomości (\(bridgeBody.count) B) "
+                + snippet(bridgeBody))
+        }
+        sid = sid.replacingOccurrences(of: "-MAINT", with: "").replacingOccurrences(of: "MAINT", with: "")
+        dzienniksid = sid
+        sessionEstablishedAt = Date()
+    }
+
+    private func get(_ urlString: String) async throws -> (Data, HTTPURLResponse?) {
         guard let url = URL(string: urlString) else {
-            throw APIError.messageBridgeFailed("zły adres logowania Synergii")
+            throw APIError.messageBridgeFailed("zły adres: \(urlString)")
         }
         var request = URLRequest(url: url)
         request.setValue(Librus.browserUserAgent, forHTTPHeaderField: "User-Agent")
-
-        let status: Int
-        let finalURL: String
-        let bodyText: String
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
         do {
             let (data, resp) = try await http.data(for: request)
-            let httpResp = resp as? HTTPURLResponse
-            status = httpResp?.statusCode ?? 0
-            finalURL = httpResp?.url?.absoluteString ?? ""
-            bodyText = String(data: data, encoding: .utf8) ?? ""
+            return (data, resp as? HTTPURLResponse)
         } catch {
-            throw APIError.messageBridgeFailed("\(trail) → synergia: \(error.localizedDescription)")
+            throw APIError.messageBridgeFailed("GET \(shortPath(urlString)): \(error.localizedDescription)")
         }
-        trail += " → synergia [\(status)]"
-
-        // Pull DZIENNIKSID from wherever URLSession stashed it (synergia host cookie).
-        let jar = http.configuration.httpCookieStorage
-        let sid = jar?.cookies?.first(where: { $0.name == "DZIENNIKSID" })?.value
-
-        guard let sid, !sid.isEmpty else {
-            if bodyText.contains("przerwa_techniczna") { throw APIError.maintenance }
-            throw APIError.messageBridgeFailed(
-                "\(trail): brak DZIENNIKSID (URL: \(shortPath(finalURL)), \(bodyText.count) B)")
-        }
-        dzienniksid = sid
-        sessionEstablishedAt = Date()
     }
 
     private func autoLoginToken() async throws -> String {
@@ -173,7 +190,21 @@ actor MessagesClient {
         return token
     }
 
+    /// POST a module request, re-establishing the session once if it turns out stale.
     private func postModule(_ module: String, data: [String: String]) async throws -> Data {
+        do {
+            return try await rawPostModule(module, data: data)
+        } catch let e as APIError {
+            if case .messageBridgeFailed(let m) = e, m.contains("sesja") || m.contains("loginUrl") {
+                invalidateSession()
+                try await ensureSession()
+                return try await rawPostModule(module, data: data)
+            }
+            throw e
+        }
+    }
+
+    private func rawPostModule(_ module: String, data: [String: String]) async throws -> Data {
         guard let url = URL(string: Librus.messagesModuleBase.absoluteString + "/" + module) else {
             throw APIError.messageBridgeFailed("zły adres modułu")
         }
@@ -194,15 +225,15 @@ actor MessagesClient {
             if status >= 500 || text.contains("OffLine") || text.contains("przerwa_techniczna") {
                 throw APIError.maintenance
             }
-            if text.contains("eAccessDeny") || text.contains("stop.png")
-                || text.contains("Niepoprawny login") {
-                sessionEstablishedAt = nil
-                throw APIError.messageBridgeFailed("brak dostępu do modułu (sesja?): " + snippet(body))
+            // Session lost — the module hands back an <error><loginUrl>…</error> page.
+            if text.contains("<loginUrl>") || text.contains("eAccessDeny")
+                || text.contains("stop.png") || text.contains("Niepoprawny login") {
+                throw APIError.messageBridgeFailed("sesja wygasła (loginUrl): " + snippet(body))
             }
             let looksLikeXML = text.contains("<response") || text.contains("<service")
-                || text.contains("<data") || text.contains("<ArrayItem")
+                || text.contains("<data") || text.contains("<ArrayItem") || text.contains("<GetList")
+                || text.contains("<GetMessage") || text.contains("<SendMessage")
             if !looksLikeXML {
-                sessionEstablishedAt = nil
                 throw APIError.messageBridgeFailed("moduł \(module) nie zwrócił XML [\(status)]: " + snippet(body))
             }
             return body
