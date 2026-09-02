@@ -14,18 +14,26 @@ struct GradeSimulatorView: View {
         GradeMath.projectedAverage(real: realGrades, adding: hypotheticals)
     }
 
+    private var delta: Double? {
+        guard let a = currentAverage, let b = projected else { return nil }
+        return b - a
+    }
+
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    LabeledContent("Średnia teraz") {
-                        Text(GradeMath.format(currentAverage))
-                            .foregroundStyle(gradeColor(for: currentAverage))
-                    }
-                    LabeledContent("Średnia po zmianach") {
-                        Text(GradeMath.format(projected))
-                            .font(.headline)
-                            .foregroundStyle(gradeColor(for: projected))
+                    resultRow(title: "Średnia teraz", value: currentAverage, prominent: false)
+                    resultRow(title: "Średnia po zmianach", value: projected, prominent: true)
+                    if let delta, abs(delta) >= 0.005 {
+                        HStack {
+                            Text("Zmiana").foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%+.2f", delta))
+                                .font(.subheadline.weight(.semibold))
+                                .fontDesign(.rounded)
+                                .foregroundStyle(delta >= 0 ? Color.positive : Color.negative)
+                        }
                     }
                 }
 
@@ -34,50 +42,66 @@ struct GradeSimulatorView: View {
                         HStack {
                             Text("Ocena")
                             Spacer()
-                            Text(String(format: "%.2f", newValue)).foregroundStyle(.secondary)
+                            Text(String(format: "%.2f", newValue))
+                                .fontDesign(.rounded)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     Stepper(value: $newWeight, in: 1...10, step: 1) {
                         HStack {
                             Text("Waga")
                             Spacer()
-                            Text(String(format: "%.0f", newWeight)).foregroundStyle(.secondary)
+                            Text(String(format: "%.0f", newWeight))
+                                .fontDesign(.rounded)
+                                .foregroundStyle(.secondary)
                         }
                     }
-                    Button("Dodaj") {
+                    Button {
+                        Haptics.tap()
                         hypotheticals.append(.init(value: newValue, weight: newWeight))
+                    } label: {
+                        Label("Dodaj ocenę", systemImage: "plus.circle.fill")
                     }
                 }
 
                 if !hypotheticals.isEmpty {
                     Section("Hipotetyczne oceny") {
                         ForEach(hypotheticals) { h in
-                            HStack {
-                                Text(String(format: "%.2f", h.value))
-                                    .font(.headline.monospacedDigit())
-                                    .foregroundStyle(gradeColor(for: h.value))
+                            HStack(spacing: Theme.Space.md) {
+                                Pill(text: String(format: "%.2f", h.value), color: gradeColor(for: h.value))
                                 Text("waga \(String(format: "%.0f", h.weight))")
                                     .font(.caption).foregroundStyle(.secondary)
+                                Spacer()
                             }
                         }
                         .onDelete { hypotheticals.remove(atOffsets: $0) }
-                        Button("Wyczyść", role: .destructive) { hypotheticals.removeAll() }
+                        Button("Wyczyść wszystkie", role: .destructive) {
+                            Haptics.warning()
+                            hypotheticals.removeAll()
+                        }
                     }
                 }
 
-                Section("Ile potrzebuję?") {
+                Section {
                     ForEach([Double(5), 4.5, 4, 3.5, 3], id: \.self) { target in
                         if let needed = GradeMath.neededGrade(real: realGrades, weight: newWeight, target: target) {
-                            LabeledContent("Na średnią \(String(format: "%.1f", target))") {
-                                Text(String(format: "%.2f", needed))
-                                    .foregroundStyle(gradeColor(for: needed))
+                            HStack {
+                                Text("Na średnią \(String(format: "%.1f", target))")
+                                Spacer()
+                                Pill(text: String(format: "%.2f", needed),
+                                     color: gradeColor(for: needed), prominent: false)
                             }
                         }
                     }
+                } header: {
+                    Text("Ile potrzebuję?").textCase(nil)
+                } footer: {
                     Text("Przy jednej ocenie o wadze \(String(format: "%.0f", newWeight)).")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Color.appGroupedBackground.ignoresSafeArea())
             .navigationTitle(subjectName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -85,6 +109,18 @@ struct GradeSimulatorView: View {
                     Button("Gotowe") { dismiss() }
                 }
             }
+        }
+    }
+
+    private func resultRow(title: String, value: Double?, prominent: Bool) -> some View {
+        HStack {
+            Text(title).foregroundStyle(.secondary)
+            Spacer()
+            Text(GradeMath.format(value))
+                .font(prominent ? .title3.weight(.bold) : .body.weight(.medium))
+                .fontDesign(.rounded)
+                .foregroundStyle(gradeColor(for: value))
+                .contentTransition(.numericText())
         }
     }
 }
