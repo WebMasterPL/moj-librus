@@ -61,8 +61,10 @@ struct MessageDetailView: View {
     @Environment(DataRepository.self) private var repo
     let message: MessageItem
 
-    @State private var body_: String?
+    @State private var text: String?
+    @State private var senderLoginId: String?
     @State private var loading = true
+    @State private var showReply = false
 
     var body: some View {
         ScrollView {
@@ -79,7 +81,7 @@ struct MessageDetailView: View {
 
                 if loading {
                     ProgressView().frame(maxWidth: .infinity)
-                } else if let text = body_, !text.isEmpty {
+                } else if let text, !text.isEmpty {
                     Text(text).font(.body).textSelection(.enabled)
                 } else {
                     Text("Nie udało się wczytać treści wiadomości.")
@@ -91,9 +93,113 @@ struct MessageDetailView: View {
         }
         .navigationTitle("Wiadomość")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let senderLoginId, !senderLoginId.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showReply = true
+                    } label: {
+                        Label("Odpowiedz", systemImage: "arrowshape.turn.up.left")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showReply) {
+            if let senderLoginId {
+                MessageReplyView(
+                    recipientName: message.correspondent,
+                    recipientLoginId: senderLoginId,
+                    quotedSubject: message.subject
+                )
+                .environment(repo)
+            }
+        }
         .task {
-            body_ = await repo.loadMessageBody(message.id)
+            let content = await repo.loadMessageContent(message.id)
+            text = content?.text
+            senderLoginId = content?.senderLoginId
             loading = false
+        }
+    }
+}
+
+struct MessageReplyView: View {
+    let recipientName: String
+    let recipientLoginId: String
+    let quotedSubject: String
+
+    @Environment(DataRepository.self) private var repo
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var subject: String
+    @State private var body_ = ""
+    @State private var sending = false
+    @State private var errorText: String?
+    @State private var confirm = false
+
+    init(recipientName: String, recipientLoginId: String, quotedSubject: String) {
+        self.recipientName = recipientName
+        self.recipientLoginId = recipientLoginId
+        self.quotedSubject = quotedSubject
+        let base = quotedSubject.hasPrefix("RE:") || quotedSubject.hasPrefix("Re:")
+            ? quotedSubject : "RE: \(quotedSubject)"
+        _subject = State(initialValue: base)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Do") { Text(recipientName) }
+                Section("Temat") {
+                    TextField("Temat", text: $subject)
+                }
+                Section("Treść") {
+                    TextEditor(text: $body_)
+                        .frame(minHeight: 180)
+                }
+                if let errorText {
+                    Section {
+                        Text(errorText).foregroundStyle(.red).font(.footnote)
+                    }
+                }
+            }
+            .navigationTitle("Odpowiedź")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Anuluj") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Wyślij") { confirm = true }
+                        .disabled(body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+                }
+            }
+            .overlay {
+                if sending { ProgressView("Wysyłanie…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
+            }
+            .confirmationDialog(
+                "Wysłać wiadomość do: \(recipientName)?",
+                isPresented: $confirm, titleVisibility: .visible
+            ) {
+                Button("Wyślij") { send() }
+                Button("Anuluj", role: .cancel) {}
+            } message: {
+                Text("Temat: \(subject)")
+            }
+        }
+    }
+
+    private func send() {
+        sending = true
+        errorText = nil
+        Task {
+            let error = await repo.sendReply(to: recipientLoginId, subject: subject, body: body_)
+            sending = false
+            if let error {
+                errorText = error
+            } else {
+                dismiss()
+            }
         }
     }
 }

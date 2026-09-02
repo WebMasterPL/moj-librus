@@ -60,7 +60,12 @@ actor MessagesClient {
         }
     }
 
-    func body(messageId: Int) async throws -> String {
+    struct MessageContent: Sendable {
+        var text: String
+        var senderLoginId: String?
+    }
+
+    func content(messageId: Int) async throws -> MessageContent {
         try await ensureSession()
         let xml = try await postModule("GetMessage", data: [
             "messageId": String(messageId), "archive": "0",
@@ -72,12 +77,44 @@ actor MessagesClient {
             throw APIError.messageBridgeFailed("nie udało się odczytać treści wiadomości")
         }
         let rawMessage = dataNode.childText("Message") ?? dataNode.childText("message") ?? ""
-        // Librus base64-encodes the body.
+        let senderLoginId = dataNode.childText("senderId") ?? dataNode.childText("senderid")
+
+        let text: String
         if let decoded = Data(base64Encoded: rawMessage.filter { !$0.isWhitespace }),
-           let text = String(data: decoded, encoding: .utf8) {
-            return cleanup(text)
+           let decodedText = String(data: decoded, encoding: .utf8) {
+            text = cleanup(decodedText)
+        } else {
+            text = cleanup(rawMessage)
         }
-        return cleanup(rawMessage)
+        return MessageContent(text: text, senderLoginId: senderLoginId)
+    }
+
+    /// Sends a message. Returns the new message id on success, throws otherwise.
+    @discardableResult
+    func send(recipientLoginIds: [String], subject: String, body: String) async throws -> Int {
+        guard !recipientLoginIds.isEmpty else {
+            throw APIError.messageBridgeFailed("brak odbiorcy")
+        }
+        try await ensureSession()
+        let params = [
+            "topic": Data(subject.utf8).base64EncodedString(),
+            "message": Data(body.utf8).base64EncodedString(),
+            "receivers": recipientLoginIds.joined(separator: ","),
+            "actions": Data("<Actions/>".utf8).base64EncodedString(),
+        ]
+        let xml = try await postModule("SendMessage", data: params)
+        guard let root = XMLTreeNode.parse(xml),
+              let node = root.firstNode(path: ["response", "SendMessage"])
+                ?? findFirst(root, named: "SendMessage") else {
+            throw APIError.messageBridgeFailed("nieczytelna odpowiedź na wysyłkę")
+        }
+        let status = node.childText("status") ?? ""
+        let newId = (node.firstNode(path: ["data"])?.text).flatMap { Int($0.filter(\.isNumber)) }
+            ?? node.childText("data").flatMap { Int($0.filter(\.isNumber)) }
+        guard status.lowercased() == "ok", let newId else {
+            throw APIError.messageBridgeFailed(node.childText("message") ?? "wysyłka odrzucona przez Librus")
+        }
+        return newId
     }
 
     // MARK: - Session bridge

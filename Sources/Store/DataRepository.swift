@@ -321,11 +321,22 @@ final class DataRepository {
         }
     }
 
-    func loadMessageBody(_ id: Int) async -> String? {
-        do { return try await messages.body(messageId: id) }
+    func loadMessageContent(_ id: Int) async -> MessagesClient.MessageContent? {
+        do { return try await messages.content(messageId: id) }
         catch {
             handle(error, into: \.messagesError)
             return nil
+        }
+    }
+
+    /// Sends a reply. Returns nil on success, or an error message to show the user.
+    func sendReply(to recipientLoginId: String, subject: String, body: String) async -> String? {
+        do {
+            try await messages.send(recipientLoginIds: [recipientLoginId], subject: subject, body: body)
+            await loadMessages()
+            return nil
+        } catch {
+            return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
