@@ -34,6 +34,7 @@ struct SettingsView: View {
 
             Section {
                 Button {
+                    Haptics.tap()
                     Task {
                         await repo.refreshCore()
                         await repo.loadTimetable(weekStart: LibrusDate.weekStart())
@@ -84,7 +85,12 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.appGroupedBackground.ignoresSafeArea())
         .navigationTitle("Ustawienia")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(.accentColor)
         .onChange(of: notifyNewGrades) { _, on in
             Task {
                 if on {

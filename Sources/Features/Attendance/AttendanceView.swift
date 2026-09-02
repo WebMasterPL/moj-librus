@@ -4,10 +4,10 @@ struct AttendanceView: View {
     @Environment(DataRepository.self) private var repo
     @State private var filter: SemesterFilter = .current
 
-    private let columns = [GridItem(.flexible()), GridItem(.flexible())]
-
     private var items: [AttendanceItem] {
-        repo.attendanceItems.filter { filter.matches($0.semester ?? repo.currentSemester, current: repo.currentSemester) }
+        repo.attendanceItems.filter {
+            filter.matches($0.semester ?? repo.currentSemester, current: repo.currentSemester)
+        }
     }
 
     private var summary: AttendanceSummary {
@@ -25,116 +25,95 @@ struct AttendanceView: View {
     }
 
     private var bySubject: [SubjectAttendance] {
-        let groups = Dictionary(grouping: items.filter { $0.subjectName != nil }) { $0.subjectName! }
-        return groups.map { name, entries in
-            SubjectAttendance(
-                subject: name,
-                absent: entries.filter { $0.kind == .absent }.count,
-                excused: entries.filter { $0.kind == .absentExcused }.count,
-                belated: entries.filter { $0.kind == .belated }.count
-            )
-        }
-        .filter { $0.absent + $0.excused + $0.belated > 0 }
-        .sorted { ($0.absent + $0.belated) > ($1.absent + $1.belated) }
+        Dictionary(grouping: items.filter { $0.subjectName != nil }) { $0.subjectName! }
+            .map { name, e in
+                SubjectAttendance(subject: name,
+                                  absent: e.filter { $0.kind == .absent }.count,
+                                  excused: e.filter { $0.kind == .absentExcused }.count,
+                                  belated: e.filter { $0.kind == .belated }.count)
+            }
+            .filter { $0.absent + $0.excused + $0.belated > 0 }
+            .sorted { ($0.absent + $0.belated) > ($1.absent + $1.belated) }
     }
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(spacing: Theme.Space.lg) {
                 Picker("Semestr", selection: $filter) {
                     ForEach(SemesterFilter.allCases) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0))
-            }
 
-            Section {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    statTile("Frekwencja",
-                             value: summary.attendancePercent.map { String(format: "%.0f%%", $0) } ?? "—",
-                             color: .green)
-                    statTile("Nieobecności", value: "\(summary.absent)", color: .red)
-                    statTile("Usprawiedliwione", value: "\(summary.absentExcused)", color: .orange)
-                    statTile("Spóźnienia", value: "\(summary.belated)", color: .yellow)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: Theme.Space.md) {
+                    StatTile(value: summary.attendancePercent.map { String(format: "%.0f%%", $0) } ?? "—",
+                             label: "Frekwencja", color: .positive, systemImage: "chart.pie.fill")
+                    StatTile(value: "\(summary.absent)", label: "Nieobecności",
+                             color: .negative, systemImage: "xmark")
+                    StatTile(value: "\(summary.absentExcused)", label: "Usprawiedliwione",
+                             color: .warning, systemImage: "checkmark.shield")
+                    StatTile(value: "\(summary.belated)", label: "Spóźnienia",
+                             color: .info, systemImage: "clock")
                 }
-                .listRowInsets(EdgeInsets())
-                .listRowBackground(Color.clear)
-            }
 
-            if items.isEmpty {
-                Section {
+                if !bySubject.isEmpty {
+                    SectionCard("Wg przedmiotów", systemImage: "list.bullet") {
+                        VStack(spacing: Theme.Space.sm) {
+                            ForEach(bySubject) { row in
+                                HStack {
+                                    Text(row.subject).font(.callout).lineLimit(1)
+                                    Spacer(minLength: Theme.Space.sm)
+                                    if row.absent > 0 { Pill(text: "\(row.absent) nb", color: .negative, prominent: false) }
+                                    if row.excused > 0 { Pill(text: "\(row.excused) u", color: .warning, prominent: false) }
+                                    if row.belated > 0 { Pill(text: "\(row.belated) sp", color: .info, prominent: false) }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if items.isEmpty {
                     EmptyStateView(systemImage: "person.crop.circle.badge.checkmark",
                                    title: "Brak wpisów frekwencji")
-                }
-            }
-
-            if !bySubject.isEmpty {
-                Section("Wg przedmiotów") {
-                    ForEach(bySubject) { row in
-                        HStack {
-                            Text(row.subject).font(.callout)
-                            Spacer()
-                            if row.absent > 0 {
-                                tag("\(row.absent) nb", .red)
-                            }
-                            if row.excused > 0 {
-                                tag("\(row.excused) u", .orange)
-                            }
-                            if row.belated > 0 {
-                                tag("\(row.belated) sp", .yellow)
+                        .padding(.top, Theme.Space.xl)
+                } else {
+                    SectionCard("Wpisy", systemImage: "clock.arrow.circlepath") {
+                        VStack(spacing: 0) {
+                            ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                                entryRow(item)
+                                if idx < items.count - 1 { Divider().opacity(0.4) }
                             }
                         }
                     }
                 }
             }
-
-            if !items.isEmpty {
-                Section("Wpisy") {
-                    ForEach(items) { item in
-                        HStack(spacing: 12) {
-                            Text(item.typeShort)
-                                .font(.caption.bold())
-                                .frame(width: 34, height: 34)
-                                .background((Color(librusHex: item.colorHex) ?? attendanceColor(item.kind)).opacity(0.2),
-                                            in: Circle())
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.subjectName ?? item.typeName).font(.callout)
-                                Text(item.typeName).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 2) {
-                                if let date = item.date {
-                                    Text(date.dayMonthShort).font(.caption)
-                                }
-                                if let no = item.lessonNo {
-                                    Text("lekcja \(no)").font(.caption2).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            .padding(Theme.Space.lg)
         }
+        .screenBackground()
         .navigationTitle("Frekwencja")
         .refreshable { await repo.refreshCore() }
+        .animation(Theme.Motion.quick, value: filter)
     }
 
-    private func tag(_ text: String, _ color: Color) -> some View {
-        Text(text)
-            .font(.caption2.bold())
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(color.opacity(0.18), in: Capsule())
-            .foregroundStyle(color)
-    }
-
-    private func statTile(_ label: String, value: String, color: Color) -> some View {
-        VStack(spacing: 4) {
-            Text(value).font(.title2.bold()).foregroundStyle(color)
-            Text(label).font(.caption).foregroundStyle(.secondary)
+    private func entryRow(_ item: AttendanceItem) -> some View {
+        let color = Color(librusHex: item.colorHex) ?? attendanceColor(item.kind)
+        return HStack(spacing: Theme.Space.md) {
+            Text(item.typeShort)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(color)
+                .frame(width: 34, height: 34)
+                .background(color.opacity(0.16), in: Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.subjectName ?? item.typeName).font(.callout).lineLimit(1)
+                Text(item.typeName).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: Theme.Space.sm)
+            VStack(alignment: .trailing, spacing: 1) {
+                if let date = item.date { Text(date.dayMonthShort).font(.caption) }
+                if let no = item.lessonNo {
+                    Text("lekcja \(no)").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, Theme.Space.sm)
     }
 }

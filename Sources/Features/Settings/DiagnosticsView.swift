@@ -28,9 +28,10 @@ struct DiagnosticsView: View {
             if !results.isEmpty {
                 Section {
                     ForEach(results) { r in
-                        HStack(alignment: .top, spacing: 10) {
+                        HStack(alignment: .top, spacing: Theme.Space.md) {
                             Image(systemName: r.ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                                .foregroundStyle(r.ok ? .green : .red)
+                                .font(.body)
+                                .foregroundStyle(r.ok ? Color.positive : Color.negative)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(r.name).font(.callout.weight(.medium))
                                 Text(r.detail)
@@ -39,24 +40,35 @@ struct DiagnosticsView: View {
                                     .textSelection(.enabled)
                             }
                         }
+                        .padding(.vertical, 1)
                     }
+                } header: {
+                    let bad = results.filter { !$0.ok }.count
+                    Text(bad == 0 ? "Wszystko OK (\(results.count))" : "\(bad) z \(results.count) nie działa")
+                        .textCase(nil)
                 }
 
                 Section {
                     Button {
                         UIPasteboard.general.string = Diagnostics.report(results)
-                        copied = true
+                        Haptics.success()
+                        withAnimation(Theme.Motion.quick) { copied = true }
                     } label: {
                         Label(copied ? "Skopiowano" : "Kopiuj raport", systemImage: copied ? "checkmark" : "doc.on.doc")
                     }
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.appGroupedBackground.ignoresSafeArea())
         .navigationTitle("Diagnostyka")
         .navigationBarTitleDisplayMode(.inline)
+        .animation(Theme.Motion.standard, value: results.count)
     }
 
     private func runChecks() async {
+        Haptics.tap()
         running = true
         copied = false
         results = []

@@ -39,44 +39,52 @@ struct MoreView: View {
     var body: some View {
         List {
             Section {
-                NavigationLink {
+                row("Ogłoszenia", "megaphone.fill", .orange, badge: repo.unreadAnnouncementCount) {
                     AnnouncementsView()
-                } label: {
-                    Label("Ogłoszenia", systemImage: "megaphone.fill")
-                        .badge(repo.unreadAnnouncementCount)
                 }
-                NavigationLink {
+                row("Terminarz", "calendar.badge.clock", .red, badge: repo.upcomingEventCount) {
                     EventsView()
-                } label: {
-                    Label("Terminarz", systemImage: "calendar.badge.clock")
-                        .badge(repo.upcomingEventCount)
                 }
-                NavigationLink {
+                row("Uwagi", "exclamationmark.bubble.fill", .purple, badge: repo.notes.count) {
                     NotesView()
-                } label: {
-                    Label("Uwagi", systemImage: "note.text")
-                        .badge(repo.notes.count)
                 }
-                NavigationLink {
+                row("Wiadomości", "envelope.fill", .blue, badge: repo.unreadMessageCount) {
                     MessagesView()
-                } label: {
-                    Label("Wiadomości", systemImage: "envelope.fill")
-                        .badge(repo.unreadMessageCount)
                 }
             }
             Section {
-                NavigationLink {
-                    BellScheduleView()
-                } label: {
-                    Label("Rozkład dzwonków", systemImage: "bell.fill")
-                }
-                NavigationLink {
-                    SettingsView()
-                } label: {
-                    Label("Ustawienia", systemImage: "gearshape.fill")
+                row("Rozkład dzwonków", "bell.fill", .teal) { BellScheduleView() }
+                row("Ustawienia", "gearshape.fill", .gray) { SettingsView() }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.appGroupedBackground.ignoresSafeArea())
+        .navigationTitle("Więcej")
+    }
+
+    @ViewBuilder
+    private func row<Destination: View>(
+        _ title: String, _ icon: String, _ tint: Color, badge: Int = 0,
+        @ViewBuilder destination: () -> Destination
+    ) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            HStack(spacing: Theme.Space.md) {
+                Image(systemName: icon)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(tint.gradient, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                Text(title)
+                Spacer()
+                if badge > 0 {
+                    Text("\(badge)")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
                 }
             }
         }
-        .navigationTitle("Więcej")
     }
 }

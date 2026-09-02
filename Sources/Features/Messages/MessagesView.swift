@@ -23,29 +23,35 @@ struct MessagesView: View {
             ForEach(repo.messagesInbox) { message in
                 let unread = !repo.isMessageRead(message)
                 NavigationLink(value: message) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            if unread {
-                                Circle().fill(.tint).frame(width: 8, height: 8)
+                    HStack(alignment: .top, spacing: Theme.Space.md) {
+                        Circle()
+                            .fill(unread ? Color.accentColor : Color.clear)
+                            .frame(width: 8, height: 8)
+                            .padding(.top, 6)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(message.correspondent)
+                                    .font(.callout.weight(unread ? .semibold : .regular))
+                                    .lineLimit(1)
+                                Spacer(minLength: Theme.Space.sm)
+                                if message.hasAttachments {
+                                    Image(systemName: "paperclip").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                if let date = message.sentDate {
+                                    Text(date.dayMonthShort).font(.caption).foregroundStyle(.secondary)
+                                }
                             }
-                            Text(message.correspondent)
-                                .font(.callout.weight(unread ? .semibold : .regular))
-                            Spacer()
-                            if message.hasAttachments {
-                                Image(systemName: "paperclip").font(.caption).foregroundStyle(.secondary)
-                            }
-                            if let date = message.sentDate {
-                                Text(date.dayMonthShort).font(.caption).foregroundStyle(.secondary)
-                            }
+                            Text(message.subject.isEmpty ? "(bez tematu)" : message.subject)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
                         }
-                        Text(message.subject.isEmpty ? "(bez tematu)" : message.subject)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
                     }
+                    .padding(.vertical, 2)
                 }
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     Button {
+                        Haptics.soft()
                         repo.setMessageRead(message, read: unread)
                     } label: {
                         Label(unread ? "Przeczytane" : "Nieprzeczytane",
@@ -55,6 +61,9 @@ struct MessagesView: View {
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.appGroupedBackground.ignoresSafeArea())
         .navigationTitle("Wiadomości")
         .navigationDestination(for: MessageItem.self) { MessageDetailView(message: $0) }
         .refreshable { await repo.loadMessages() }
@@ -78,29 +87,31 @@ struct MessageDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
                 Text(message.subject.isEmpty ? "(bez tematu)" : message.subject)
-                    .font(.title3.bold())
-                HStack(spacing: 8) {
-                    Label(message.correspondent, systemImage: "person")
+                    .font(.title2.weight(.bold))
+                HStack(spacing: Theme.Space.md) {
+                    Label(message.correspondent, systemImage: "person.fill")
                     if let date = message.sentDate { Label(date.dayMonthYear, systemImage: "calendar") }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                Divider()
+
+                Divider().padding(.vertical, Theme.Space.xs)
 
                 if loading {
-                    ProgressView().frame(maxWidth: .infinity)
+                    ProgressView().frame(maxWidth: .infinity).padding(.vertical, Theme.Space.xl)
                 } else if let text, !text.isEmpty {
                     Text(text).font(.body).textSelection(.enabled)
                 } else {
                     Text("Nie udało się wczytać treści wiadomości.")
-                        .foregroundStyle(.secondary)
+                        .font(.callout).foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
+            .padding(Theme.Space.lg)
         }
+        .screenBackground()
         .navigationTitle("Wiadomość")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

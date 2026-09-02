@@ -9,10 +9,7 @@ struct EventsView: View {
     }
 
     private var grouped: [(key: String, items: [CalendarEvent])] {
-        let groups = Dictionary(grouping: visible) { ev -> String in
-            ev.date?.dayMonthYear ?? "Bez daty"
-        }
-        return groups
+        Dictionary(grouping: visible) { $0.date?.dayMonthYear ?? "Bez daty" }
             .sorted { ($0.value.first?.date ?? .distantFuture) < ($1.value.first?.date ?? .distantFuture) }
             .map { (key: $0.key, items: $0.value) }
     }
@@ -22,42 +19,41 @@ struct EventsView: View {
             if repo.events.isEmpty {
                 EmptyStateView(systemImage: "calendar.badge.clock", title: "Brak wpisów w terminarzu")
             }
-
             if !repo.events.isEmpty {
-                Toggle("Pokaż minione", isOn: $showPast)
+                Toggle("Pokaż minione", isOn: $showPast.animation(Theme.Motion.quick))
             }
 
             ForEach(grouped, id: \.key) { group in
-                Section(group.key) {
+                Section {
                     ForEach(group.items) { ev in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 8) {
-                                if let category = ev.category {
-                                    Text(category)
-                                        .font(.caption.bold())
-                                        .foregroundStyle(.tint)
-                                }
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: Theme.Space.sm) {
+                                if let category = ev.category { Chip(text: category, tint: .accentColor) }
                                 if let subject = ev.subject {
                                     Text(subject).font(.caption).foregroundStyle(.secondary)
                                 }
-                                Spacer()
+                                Spacer(minLength: 0)
                                 if let time = ev.time {
                                     Text(time).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                 } else if let no = ev.lessonNo {
-                                    Text("lekcja \(no)").font(.caption2).foregroundStyle(.secondary)
+                                    Text("lekcja \(no)").font(.caption2).foregroundStyle(.tertiary)
                                 }
                             }
-                            Text(ev.content.isEmpty ? "(bez opisu)" : ev.content)
-                                .font(.callout)
+                            Text(ev.content.isEmpty ? "(bez opisu)" : ev.content).font(.callout)
                             if let teacher = ev.teacher {
                                 Text(teacher).font(.caption2).foregroundStyle(.tertiary)
                             }
                         }
                         .padding(.vertical, 2)
                     }
+                } header: {
+                    Text(group.key).textCase(nil)
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.appGroupedBackground.ignoresSafeArea())
         .navigationTitle("Terminarz")
         .refreshable { await repo.refreshCore() }
     }

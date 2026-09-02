@@ -8,10 +8,12 @@ struct TimetableView: View {
 
     private var weekKey: String { LibrusDate.ymdString(weekStart) }
     private var days: [TimetableDay] { repo.timetableWeeks[weekKey] ?? [] }
+    private var isCurrentWeek: Bool { LibrusDate.isSameDay(weekStart, LibrusDate.weekStart()) }
 
     var body: some View {
         VStack(spacing: 0) {
             weekSwitcher
+            Divider().opacity(0.5)
 
             if days.isEmpty {
                 if isLoading {
@@ -19,39 +21,29 @@ struct TimetableView: View {
                 } else {
                     EmptyStateView(systemImage: "calendar", title: "Brak planu",
                                    message: "Dla tego tygodnia nie ma danych.")
-                    .frame(maxHeight: .infinity)
+                        .frame(maxHeight: .infinity)
                 }
             } else {
-                List {
-                    ForEach(days) { day in
-                        Section {
-                            if day.entries.isEmpty {
-                                Text("Brak lekcji").foregroundStyle(.secondary)
-                            } else {
-                                ForEach(day.entries) { LessonRow(entry: $0) }
-                            }
-                        } header: {
-                            HStack {
-                                Text(day.date.weekdayName.capitalized + " · " + day.date.dayMonthShort)
-                                if LibrusDate.isSameDay(day.date, Date()) {
-                                    Text("dziś")
-                                        .font(.caption2.bold())
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(.tint, in: Capsule())
-                                        .foregroundStyle(.white)
-                                }
-                            }
+                ScrollView {
+                    VStack(spacing: Theme.Space.lg) {
+                        ForEach(days) { day in
+                            dayCard(day)
                         }
                     }
+                    .padding(Theme.Space.lg)
                 }
             }
         }
+        .screenBackground()
         .navigationTitle("Plan lekcji")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Dziś") { weekStart = LibrusDate.weekStart() }
-                    .disabled(LibrusDate.isSameDay(weekStart, LibrusDate.weekStart()))
+                Button("Dziś") {
+                    Haptics.tap()
+                    withAnimation(Theme.Motion.standard) { weekStart = LibrusDate.weekStart() }
+                }
+                .disabled(isCurrentWeek)
             }
         }
         .task(id: weekKey) { await loadIfNeeded() }
@@ -60,24 +52,69 @@ struct TimetableView: View {
 
     private var weekSwitcher: some View {
         HStack {
-            Button { shift(-7) } label: { Image(systemName: "chevron.left") }
+            Button { shift(-7) } label: {
+                Image(systemName: "chevron.left").font(.body.weight(.semibold))
+            }
+            .frame(width: 44, height: 44)
+
             Spacer()
             VStack(spacing: 1) {
                 Text("\(weekStart.dayMonthShort) – \(LibrusDate.addDays(6, to: weekStart).dayMonthShort)")
-                    .font(.subheadline.bold())
-                if LibrusDate.isSameDay(weekStart, LibrusDate.weekStart()) {
+                    .font(.subheadline.weight(.semibold))
+                if isCurrentWeek {
                     Text("bieżący tydzień").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             Spacer()
-            Button { shift(7) } label: { Image(systemName: "chevron.right") }
+
+            Button { shift(7) } label: {
+                Image(systemName: "chevron.right").font(.body.weight(.semibold))
+            }
+            .frame(width: 44, height: 44)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Theme.Space.sm)
+        .padding(.vertical, Theme.Space.xs)
     }
 
-    private func shift(_ days: Int) {
-        weekStart = LibrusDate.addDays(days, to: weekStart)
+    private func dayCard(_ day: TimetableDay) -> some View {
+        let isToday = LibrusDate.isSameDay(day.date, Date())
+        return Card(padding: Theme.Space.md) {
+            VStack(alignment: .leading, spacing: Theme.Space.sm) {
+                HStack(spacing: Theme.Space.sm) {
+                    Text(day.date.weekdayName.capitalized)
+                        .font(.subheadline.weight(.semibold))
+                    Text(day.date.dayMonthShort)
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if isToday {
+                        Text("dziś")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, Theme.Space.sm).padding(.vertical, 2)
+                            .background(.tint, in: Capsule())
+                    }
+                }
+
+                if day.entries.isEmpty {
+                    Text("Brak lekcji").font(.subheadline).foregroundStyle(.secondary)
+                        .padding(.vertical, Theme.Space.xs)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(day.entries.enumerated()), id: \.element.id) { idx, entry in
+                            LessonRow(entry: entry, highlight: isToday && entry.isOngoing())
+                            if idx < day.entries.count - 1 {
+                                Divider().padding(.leading, 58).opacity(0.4)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func shift(_ d: Int) {
+        Haptics.selection()
+        withAnimation(Theme.Motion.standard) { weekStart = LibrusDate.addDays(d, to: weekStart) }
     }
 
     private func loadIfNeeded() async {
@@ -93,46 +130,71 @@ struct TimetableView: View {
 
 struct LessonRow: View {
     let entry: TimetableEntry
+    var highlight: Bool = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(spacing: 2) {
-                Text("\(entry.lessonNo)").font(.headline)
-                Text(entry.start).font(.caption2).foregroundStyle(.secondary)
-                Text(entry.end).font(.caption2).foregroundStyle(.secondary)
+        HStack(spacing: Theme.Space.md) {
+            VStack(spacing: 1) {
+                Text("\(entry.lessonNo)")
+                    .font(.headline.weight(.bold))
+                    .fontDesign(.rounded)
+                    .foregroundStyle(highlight ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary))
+                Text(entry.start).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                Text(entry.end).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
             }
-            .frame(width: 48)
+            .frame(width: 46)
+
+            Rectangle()
+                .fill(highlight ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.clear))
+                .frame(width: 3)
+                .clipShape(Capsule())
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.subject)
                     .font(.callout.weight(.medium))
                     .strikethrough(entry.isCancelled)
                     .foregroundStyle(entry.isCancelled ? .secondary : .primary)
-                HStack(spacing: 8) {
+                HStack(spacing: Theme.Space.sm) {
                     if let teacher = entry.teacher { Text(teacher) }
                     roomLabel
                 }
                 .font(.caption)
-                if let note = entry.note {
-                    Text(note)
-                        .font(.caption2.bold())
-                        .foregroundStyle(entry.isCancelled ? .red : .orange)
+                .foregroundStyle(.secondary)
+
+                if entry.isCancelled {
+                    badge("Lekcja odwołana", .negative, "xmark.circle.fill")
+                } else if entry.isSubstitution {
+                    badge(entry.note ?? "Zastępstwo", .warning, "arrow.triangle.2.circlepath")
                 }
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, Theme.Space.sm)
+        .opacity(entry.isCancelled ? 0.65 : 1)
     }
 
     @ViewBuilder private var roomLabel: some View {
-        if let room = entry.classroom {
-            if entry.roomChanged, let org = entry.originalClassroom {
-                (Text("sala ") + Text(org).strikethrough() + Text(" → \(room)"))
-                    .foregroundStyle(.orange)
-                    .fontWeight(.semibold)
-            } else {
-                Text("sala \(room)").foregroundStyle(.secondary)
+        if entry.roomChanged, let room = entry.classroom {
+            HStack(spacing: 2) {
+                if let org = entry.originalClassroom {
+                    Text("sala \(org)").strikethrough()
+                }
+                Text("→ \(room)")
             }
+            .foregroundStyle(Color.warning)
+            .fontWeight(.semibold)
+        } else if let room = entry.classroom {
+            Text("sala \(room)")
         }
+    }
+
+    private func badge(_ text: String, _ color: Color, _ icon: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon).font(.caption2)
+            Text(text).font(.caption2.weight(.semibold)).lineLimit(1)
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, Theme.Space.sm).padding(.vertical, 2)
+        .background(color.opacity(0.14), in: Capsule())
     }
 }
