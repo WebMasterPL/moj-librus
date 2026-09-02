@@ -3,6 +3,7 @@ import SwiftUI
 struct GradesView: View {
     @Environment(DataRepository.self) private var repo
     @State private var filter: SemesterFilter = .current
+    @State private var simulatorSubject: SubjectGrades?
 
     private var current: Int { repo.currentSemester }
 
@@ -64,6 +65,13 @@ struct GradesView: View {
                             Text("śr. \(GradeMath.format(avg))")
                                 .foregroundStyle(gradeColor(for: avg))
                         }
+                        Button {
+                            simulatorSubject = subject
+                        } label: {
+                            Image(systemName: "function")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Kalkulator średniej dla \(subject.subjectName)")
                     }
                 }
             }
@@ -71,6 +79,12 @@ struct GradesView: View {
         .navigationTitle("Oceny")
         .navigationDestination(for: GradeItem.self) { GradeDetailView(grade: $0) }
         .refreshable { await repo.refreshCore() }
+        .sheet(item: $simulatorSubject) { subject in
+            GradeSimulatorView(
+                subjectName: subject.subjectName,
+                realGrades: subject.normalGrades(filter, current: current)
+            )
+        }
     }
 }
 

@@ -48,4 +48,47 @@ enum GradeMath {
         guard let value else { return "—" }
         return String(format: "%.2f", value)
     }
+
+    struct HypotheticalGrade: Identifiable, Hashable {
+        let id = UUID()
+        var value: Double
+        var weight: Double
+    }
+
+    /// Weighted average of the real grades plus a set of hypothetical ones.
+    static func projectedAverage(
+        real grades: [GradeItem], adding extra: [HypotheticalGrade]
+    ) -> Double? {
+        var weightSum = 0.0
+        var valueSum = 0.0
+        for g in grades {
+            guard let v = g.value, g.weight > 0 else { continue }
+            valueSum += v * g.weight
+            weightSum += g.weight
+        }
+        for h in extra where h.weight > 0 {
+            valueSum += h.value * h.weight
+            weightSum += h.weight
+        }
+        guard weightSum > 0 else { return nil }
+        return valueSum / weightSum
+    }
+
+    /// The single grade value (at `weight`) needed to reach `target`, given the real grades.
+    /// Returns nil if unreachable within 1…6.
+    static func neededGrade(
+        real grades: [GradeItem], weight: Double, target: Double
+    ) -> Double? {
+        guard weight > 0 else { return nil }
+        var weightSum = 0.0
+        var valueSum = 0.0
+        for g in grades {
+            guard let v = g.value, g.weight > 0 else { continue }
+            valueSum += v * g.weight
+            weightSum += g.weight
+        }
+        let needed = (target * (weightSum + weight) - valueSum) / weight
+        guard needed >= 1, needed <= 6 else { return nil }
+        return needed
+    }
 }
