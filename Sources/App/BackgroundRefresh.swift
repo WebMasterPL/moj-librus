@@ -10,8 +10,12 @@ enum BackgroundRefresh {
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
 
+    private static var didRegister = false
+
     /// Call once, before the app finishes launching.
     static func register() {
+        guard !didRegister else { return }
+        didRegister = true
         BGTaskScheduler.shared.register(forTaskWithIdentifier: taskIdentifier, using: nil) { task in
             guard let refreshTask = task as? BGAppRefreshTask else {
                 task.setTaskCompleted(success: false)
