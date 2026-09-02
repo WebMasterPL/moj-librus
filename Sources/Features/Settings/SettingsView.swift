@@ -62,7 +62,7 @@ struct SettingsView: View {
             } header: {
                 Text("Powiadomienia")
             } footer: {
-                Text("Eksperymentalne. iOS sam decyduje, kiedy odświeżyć aplikację w tle — dla apek sideloadowanych bywa to rzadko. Plakietka „nowe" przy ocenach działa zawsze.")
+                Text("Eksperymentalne. iOS sam decyduje, kiedy odświeżyć aplikację w tle — dla apek sideloadowanych bywa to rzadko. Plakietka „nowe” przy ocenach działa zawsze.")
             }
 
             Section {

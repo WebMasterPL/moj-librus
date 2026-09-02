@@ -21,6 +21,11 @@ przez **SideStore/AltStore** darmowym Apple ID.
 | Szczęśliwy numerek | `.../2.0/LuckyNumbers` |
 | Wiadomości (odczyt, *best-effort*) | mostek `synergia.librus.pl` → `wiadomosci.librus.pl` |
 | Ustawienia → **Diagnostyka połączenia** — test każdego endpointu + kopiuj raport | — |
+| Powiadomienia o nowych ocenach (opcjonalne, *eksperymentalne*) | `BGAppRefreshTask` |
+
+Nowe oceny są oznaczane plakietką „nowe" + liczbą na zakładce (lokalne śledzenie, działa
+zawsze). Powiadomienia w tle to osobny przełącznik w Ustawieniach — iOS sam decyduje, kiedy
+odświeżyć apkę w tle, a dla apek sideloadowanych robi to rzadko.
 
 Granica semestru brana z `.../2.0/Classes` (`EndFirstSemester`); gdy jej brak — fallback
 po miesiącu. Dane logowania trzymane są **wyłącznie w Keychainie urządzenia**. Aplikacja

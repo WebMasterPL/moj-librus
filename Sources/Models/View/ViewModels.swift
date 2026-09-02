@@ -67,6 +67,19 @@ struct TimetableEntry: Identifiable, Codable, Hashable {
     let isCancelled: Bool
     let isSubstitution: Bool
     let note: String?
+
+    var startMinutes: Int? { LibrusDate.minutesOfDay(start) }
+    var endMinutes: Int? { LibrusDate.minutesOfDay(end) }
+
+    func isOngoing(nowMinutes: Int = LibrusDate.nowMinutesOfDay) -> Bool {
+        guard let s = startMinutes, let e = endMinutes else { return false }
+        return nowMinutes >= s && nowMinutes < e
+    }
+
+    func isUpcoming(nowMinutes: Int = LibrusDate.nowMinutesOfDay) -> Bool {
+        guard let s = startMinutes else { return false }
+        return s > nowMinutes
+    }
 }
 
 struct TimetableDay: Identifiable, Codable, Hashable {

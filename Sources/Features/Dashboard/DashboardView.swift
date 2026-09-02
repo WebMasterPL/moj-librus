@@ -88,20 +88,33 @@ struct DashboardView: View {
         }
     }
 
+    private var upcomingEntries: [TimetableEntry] {
+        let now = LibrusDate.nowMinutesOfDay
+        let relevant = todayEntries.filter { $0.isOngoing(nowMinutes: now) || $0.isUpcoming(nowMinutes: now) }
+        return Array((relevant.isEmpty ? todayEntries : relevant).prefix(5))
+    }
+
     private var nextLessonsCard: some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
-                SectionHeader(title: "Dzisiaj", systemImage: "calendar")
+                SectionHeader(title: "Plan na dziś", systemImage: "calendar")
                 if todayEntries.isEmpty {
                     Text("Brak lekcji w planie na dziś.")
                         .font(.subheadline).foregroundStyle(.secondary)
                 } else {
-                    ForEach(todayEntries.prefix(6)) { entry in
+                    ForEach(upcomingEntries) { entry in
+                        let ongoing = entry.isOngoing()
                         HStack(spacing: 12) {
-                            Text(entry.start).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                            Text(entry.subject).font(.callout).strikethrough(entry.isCancelled)
+                            Text(entry.start)
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(ongoing ? Color.accentColor : .secondary)
+                            Text(entry.subject)
+                                .font(.callout.weight(ongoing ? .semibold : .regular))
+                                .strikethrough(entry.isCancelled)
                             Spacer()
-                            if let room = entry.classroom {
+                            if ongoing {
+                                Text("teraz").font(.caption2.bold()).foregroundStyle(.tint)
+                            } else if let room = entry.classroom {
                                 Text(room).font(.caption).foregroundStyle(.secondary)
                             }
                         }

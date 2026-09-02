@@ -71,6 +71,18 @@ enum LibrusDate {
     }
 
     static var today: Date { calendar.startOfDay(for: Date()) }
+
+    /// "HH:mm" -> minutes since midnight.
+    static func minutesOfDay(_ hhmm: String) -> Int? {
+        let parts = hhmm.split(separator: ":")
+        guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]) else { return nil }
+        return h * 60 + m
+    }
+
+    static var nowMinutesOfDay: Int {
+        let c = calendar.dateComponents([.hour, .minute], from: Date())
+        return (c.hour ?? 0) * 60 + (c.minute ?? 0)
+    }
 }
 
 extension Date {
