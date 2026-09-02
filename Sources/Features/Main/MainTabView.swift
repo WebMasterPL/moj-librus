@@ -10,6 +10,7 @@ struct MainTabView: View {
 
             NavigationStack { GradesView() }
                 .tabItem { Label("Oceny", systemImage: "checkmark.seal.fill") }
+                .badge(repo.unseenGradeCount)
 
             NavigationStack { TimetableView() }
                 .tabItem { Label("Plan", systemImage: "calendar") }

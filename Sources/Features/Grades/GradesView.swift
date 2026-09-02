@@ -55,7 +55,9 @@ struct GradesView: View {
             ForEach(visibleSubjects) { subject in
                 Section {
                     ForEach(subject.filtered(filter, current: current)) { grade in
-                        NavigationLink(value: grade) { GradeRow(grade: grade) }
+                        NavigationLink(value: grade) {
+                            GradeRow(grade: grade, isNew: repo.isGradeUnseen(grade))
+                        }
                     }
                 } header: {
                     HStack {
@@ -79,6 +81,7 @@ struct GradesView: View {
         .navigationTitle("Oceny")
         .navigationDestination(for: GradeItem.self) { GradeDetailView(grade: $0) }
         .refreshable { await repo.refreshCore() }
+        .onDisappear { repo.markGradesSeen() }
         .sheet(item: $simulatorSubject) { subject in
             GradeSimulatorView(
                 subjectName: subject.subjectName,
@@ -90,6 +93,7 @@ struct GradesView: View {
 
 struct GradeRow: View {
     let grade: GradeItem
+    var isNew: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -98,8 +102,17 @@ struct GradeRow: View {
                 .foregroundStyle(gradeColor(for: grade.value))
                 .frame(minWidth: 38)
             VStack(alignment: .leading, spacing: 2) {
-                Text(grade.categoryName.isEmpty ? Self.label(for: grade.kind) : grade.categoryName)
-                    .font(.callout)
+                HStack(spacing: 6) {
+                    Text(grade.categoryName.isEmpty ? Self.label(for: grade.kind) : grade.categoryName)
+                        .font(.callout)
+                    if isNew {
+                        Text("nowe")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(.tint, in: Capsule())
+                            .foregroundStyle(.white)
+                    }
+                }
                 HStack(spacing: 8) {
                     if grade.weight > 0 {
                         Text("waga \(GradeMath.format(grade.weight))")
