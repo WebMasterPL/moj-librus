@@ -9,9 +9,19 @@ struct EventsView: View {
     }
 
     private var grouped: [(key: String, items: [CalendarEvent])] {
-        Dictionary(grouping: visible) { $0.date?.dayMonthYear ?? "Bez daty" }
-            .sorted { ($0.value.first?.date ?? .distantFuture) < ($1.value.first?.date ?? .distantFuture) }
-            .map { (key: $0.key, items: $0.value) }
+        let buckets: [String: [CalendarEvent]] = Dictionary(grouping: visible) { event in
+            event.date?.dayMonthYear ?? "Bez daty"
+        }
+        var rows: [(key: String, items: [CalendarEvent])] = []
+        for (key, items) in buckets {
+            rows.append((key: key, items: items))
+        }
+        rows.sort { lhs, rhs in
+            let l = lhs.items.first?.date ?? .distantFuture
+            let r = rhs.items.first?.date ?? .distantFuture
+            return l < r
+        }
+        return rows
     }
 
     var body: some View {

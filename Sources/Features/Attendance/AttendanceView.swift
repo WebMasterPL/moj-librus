@@ -25,15 +25,17 @@ struct AttendanceView: View {
     }
 
     private var bySubject: [SubjectAttendance] {
-        Dictionary(grouping: items.filter { $0.subjectName != nil }) { $0.subjectName! }
-            .map { name, e in
-                SubjectAttendance(subject: name,
-                                  absent: e.filter { $0.kind == .absent }.count,
-                                  excused: e.filter { $0.kind == .absentExcused }.count,
-                                  belated: e.filter { $0.kind == .belated }.count)
-            }
-            .filter { $0.absent + $0.excused + $0.belated > 0 }
-            .sorted { ($0.absent + $0.belated) > ($1.absent + $1.belated) }
+        let named = items.filter { $0.subjectName != nil }
+        let groups: [String: [AttendanceItem]] = Dictionary(grouping: named) { $0.subjectName ?? "" }
+        var rows: [SubjectAttendance] = []
+        for (name, entries) in groups {
+            let absent = entries.filter { $0.kind == .absent }.count
+            let excused = entries.filter { $0.kind == .absentExcused }.count
+            let belated = entries.filter { $0.kind == .belated }.count
+            guard absent + excused + belated > 0 else { continue }
+            rows.append(SubjectAttendance(subject: name, absent: absent, excused: excused, belated: belated))
+        }
+        return rows.sorted { ($0.absent + $0.belated) > ($1.absent + $1.belated) }
     }
 
     var body: some View {
