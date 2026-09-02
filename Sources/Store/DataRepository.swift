@@ -48,23 +48,23 @@ final class DataRepository {
     /// Locally-tracked "read" state for announcements (Librus has no student-side write here).
     private var readAnnouncementIDs: Set<String> = []
 
-    /// Grade ids the user has already looked at, plus whether we've ever synced.
-    private var seenGradeIDs: Set<Int> = []
-    private var hasSyncedGrades = false
+    /// Bumped after every grade sync so the `SeenGrades`-backed views recompute.
+    private var gradeSeenTick = 0
 
     /// Grades that appeared since the user last opened the Oceny tab. Empty on first sync.
     var unseenGradeCount: Int {
-        guard hasSyncedGrades else { return 0 }
-        return allGradeIDs.subtracting(seenGradeIDs).count
+        _ = gradeSeenTick
+        return SeenGrades.newIDs(in: allGradeIDs).count
     }
 
     func isGradeUnseen(_ grade: GradeItem) -> Bool {
-        hasSyncedGrades && !seenGradeIDs.contains(grade.id)
+        _ = gradeSeenTick
+        return SeenGrades.newIDs(in: allGradeIDs).contains(grade.id)
     }
 
     func markGradesSeen() {
-        seenGradeIDs.formUnion(allGradeIDs)
-        saveCache()
+        SeenGrades.merge(allGradeIDs)
+        gradeSeenTick &+= 1
     }
 
     private var allGradeIDs: Set<Int> {
@@ -93,8 +93,6 @@ final class DataRepository {
         var messagesInbox: [MessageItem]
         var lastSync: Date?
         var readAnnouncementIDs: [String]
-        var seenGradeIDs: [Int]?
-        var hasSyncedGrades: Bool?
     }
 
     private func loadCache() {
@@ -111,8 +109,6 @@ final class DataRepository {
         messagesInbox = s.messagesInbox
         lastSync = s.lastSync
         readAnnouncementIDs = Set(s.readAnnouncementIDs)
-        seenGradeIDs = Set(s.seenGradeIDs ?? [])
-        hasSyncedGrades = s.hasSyncedGrades ?? false
         if let cachedWeeks = Cache.load([String: [TimetableDay]].self, from: "timetable") {
             timetableWeeks = cachedWeeks
         }
@@ -124,8 +120,7 @@ final class DataRepository {
             subjectGrades: subjectGrades, attendanceSummary: attendanceSummary,
             attendanceItems: attendanceItems, announcements: announcements,
             homework: homework, notes: notes, messagesInbox: messagesInbox, lastSync: lastSync,
-            readAnnouncementIDs: Array(readAnnouncementIDs),
-            seenGradeIDs: Array(seenGradeIDs), hasSyncedGrades: hasSyncedGrades
+            readAnnouncementIDs: Array(readAnnouncementIDs)
         )
         Cache.save(snap, as: "snapshot")
         Cache.save(timetableWeeks, as: "timetable")
@@ -136,7 +131,7 @@ final class DataRepository {
         studentName = ""; schoolYear = .init(); luckyNumber = nil; subjectGrades = []
         attendanceSummary = .init(); attendanceItems = []
         announcements = []; homework = []; notes = []; messagesInbox = []
-        seenGradeIDs = []; hasSyncedGrades = false
+        SeenGrades.reset()
         timetableWeeks = [:]; lastSync = nil
     }
 
@@ -215,11 +210,10 @@ final class DataRepository {
                     grades, subjectByID: subjectByID, userByID: userByID,
                     categoryByID: categoryByID, commentByID: commentByID
                 )
-                // First successful grade sync: treat everything as already seen.
-                if !hasSyncedGrades {
-                    seenGradeIDs = allGradeIDs
-                    hasSyncedGrades = true
+                if !SeenGrades.hasBaseline {
+                    SeenGrades.establishBaseline(allGradeIDs)
                 }
+                gradeSeenTick &+= 1
             }
 
             if let lucky = await luckyT, let n = lucky.number {

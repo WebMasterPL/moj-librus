@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(DataRepository.self) private var repo
 
     @State private var showLogoutConfirm = false
+    @AppStorage(BackgroundRefresh.enabledKey) private var notifyNewGrades = false
 
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -48,6 +49,23 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle(isOn: $notifyNewGrades) {
+                    Label("Powiadomienia o nowych ocenach", systemImage: "bell.badge")
+                }
+                if notifyNewGrades {
+                    Button {
+                        Task { await NotificationManager.sendTestNotification() }
+                    } label: {
+                        Label("Wyślij powiadomienie testowe", systemImage: "paperplane")
+                    }
+                }
+            } header: {
+                Text("Powiadomienia")
+            } footer: {
+                Text("Eksperymentalne. iOS sam decyduje, kiedy odświeżyć aplikację w tle — dla apek sideloadowanych bywa to rzadko. Plakietka „nowe" przy ocenach działa zawsze.")
+            }
+
+            Section {
                 Button(role: .destructive) {
                     showLogoutConfirm = true
                 } label: {
@@ -65,6 +83,20 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Ustawienia")
+        .onChange(of: notifyNewGrades) { _, on in
+            Task {
+                if on {
+                    let granted = await NotificationManager.requestAuthorization()
+                    if granted {
+                        BackgroundRefresh.scheduleIfEnabled()
+                    } else {
+                        notifyNewGrades = false
+                    }
+                } else {
+                    BackgroundRefresh.cancel()
+                }
+            }
+        }
         .confirmationDialog("Wylogować się?", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
             Button("Wyloguj", role: .destructive) {
                 Task { await app.logOut() }
