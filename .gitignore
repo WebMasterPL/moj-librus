@@ -1,0 +1,20 @@
+# XcodeGen output (regenerated on every build)
+*.xcodeproj/
+!project.yml
+
+# Xcode / SwiftPM
+.DS_Store
+build/
+build-test/
+DerivedData/
+dist/
+Payload/
+*.ipa
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+*.moved-aside
+
+# Local dev
+.vscode/
+*.log

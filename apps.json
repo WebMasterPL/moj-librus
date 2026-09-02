@@ -1,0 +1,37 @@
+{
+  "name": "Mój Librus (prywatne)",
+  "identifier": "com.olekd.mojlibrus.source",
+  "sourceURL": "https://github.com/olekd/Librus-plus-plus/releases/latest/download/apps.json",
+  "apps": [
+    {
+      "name": "Mój Librus",
+      "bundleIdentifier": "com.olekd.mojlibrus",
+      "developerName": "olekd",
+      "subtitle": "Nieoficjalny klient Librus Synergia",
+      "localizedDescription": "Prywatna aplikacja iOS do Librus Synergia: oceny, plan lekcji, frekwencja, ogłoszenia, zadania domowe, szczęśliwy numerek i wiadomości. Tylko do użytku własnego.",
+      "iconURL": "https://raw.githubusercontent.com/olekd/Librus-plus-plus/main/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+      "tintColor": "0C4A37",
+      "category": "education",
+      "version": "1.0.0",
+      "versionDate": "2026-09-01",
+      "versionDescription": "Pierwsza wersja.",
+      "downloadURL": "https://github.com/olekd/Librus-plus-plus/releases/latest/download/MojLibrus.ipa",
+      "size": 0,
+      "versions": [
+        {
+          "version": "1.0.0",
+          "buildVersion": "1",
+          "date": "2026-09-01",
+          "localizedDescription": "Pierwsza wersja.",
+          "downloadURL": "https://github.com/olekd/Librus-plus-plus/releases/latest/download/MojLibrus.ipa",
+          "size": 0
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      }
+    }
+  ],
+  "news": []
+}

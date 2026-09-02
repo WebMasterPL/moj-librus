@@ -1,0 +1,100 @@
+# Mój Librus
+
+Prywatna aplikacja iOS (SwiftUI) do dziennika **Librus Synergia** — na własny użytek.
+Wzorowana funkcjonalnie na [szkolny.eu](https://szkolny.eu), ale obsługuje **wyłącznie
+Librusa** i loguje się bezpośrednio kontem **Synergia** (login typu `1234567u` + hasło).
+
+Nie potrzebujesz Maca ani Xcode: aplikację buduje **GitHub Actions**, a instalujesz ją
+przez **SideStore/AltStore** darmowym Apple ID.
+
+## Funkcje
+
+| Ekran | Źródło danych |
+|---|---|
+| Pulpit (numerek, dzisiejsze lekcje, ostatnie oceny, liczniki) | agregacja |
+| Oceny — wg przedmiotów, średnie ważone, szczegóły | `api.librus.pl/2.0/Grades` |
+| Plan lekcji — tydzień, zastępstwa, odwołania | `.../2.0/Timetables` |
+| Frekwencja — podsumowanie % + wpisy | `.../2.0/Attendances` |
+| Ogłoszenia | `.../2.0/SchoolNotices` |
+| Zadania domowe | `.../2.0/HomeWorkAssignments` |
+| Szczęśliwy numerek | `.../2.0/LuckyNumbers` |
+| Wiadomości (odczyt, *best-effort*) | mostek `synergia.librus.pl` → `wiadomosci.librus.pl` |
+
+Dane logowania trzymane są **wyłącznie w Keychainie urządzenia**. Aplikacja nie ma
+własnego serwera ani telemetrii — łączy się tylko z `*.librus.pl`.
+
+## Jak to zbudować
+
+1. Wrzuć ten katalog do repozytorium GitHub (`main`).
+2. Zakładka **Actions** → workflow `build` uruchamia się przy każdym pushu na `main`
+   oraz przy tagach `v*`. Możesz też odpalić go ręcznie (`Run workflow`).
+3. Po zielonym buildzie:
+   - **artefakt** `MojLibrus-ipa` (zawiera `MojLibrus.ipa`) — w podsumowaniu runa, albo
+   - **Release** z plikiem `MojLibrus.ipa` — jeśli wypchnąłeś tag, np.:
+     ```
+     git tag v1.0.0 && git push origin v1.0.0
+     ```
+
+CI buduje **niepodpisany** `.ipa` (`CODE_SIGNING_ALLOWED=NO`) i pakuje `MojLibrus.app`
+do `Payload/` → `MojLibrus.ipa`. Podpisywanie odbywa się dopiero na telefonie w SideStore.
+
+Projekt `.xcodeproj` **nie jest** trzymany w repo — generuje go
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) z pliku `project.yml` na runnerze.
+
+## Jak zainstalować na iPhonie (SideStore)
+
+1. Zainstaluj [SideStore](https://sidestore.io) (jednorazowo z pomocą komputera; potem
+   odświeża się sam przez Wi-Fi). Alternatywa: AltStore + AltServer na PC.
+2. Na telefonie w Safari pobierz `MojLibrus.ipa` z Release / artefaktu.
+3. SideStore → zakładka **My Apps** → **+** → wybierz pobrany `MojLibrus.ipa`.
+4. SideStore podpisze apkę Twoim Apple ID i zainstaluje.
+
+Darmowe Apple ID: aplikacja wygasa po **7 dniach** — SideStore odświeża ją w tle, gdy
+telefon i komputer/serwer są w tej samej sieci. Limit 3 sideloadowanych aplikacji.
+Brak powiadomień push (nieistotne — appka i tak odpytuje Librusa przy otwarciu).
+
+### Źródło SideStore (opcjonalnie, wygodne aktualizacje)
+
+Po pierwszym **Release** dodaj w SideStore źródło:
+```
+https://github.com/<twój-user>/<repo>/releases/latest/download/apps.json
+```
+Workflow aktualizuje `apps.json` przy każdym buildzie (wersja, rozmiar, link do
+najnowszego `.ipa`). Kolejne wersje wgrywasz wtedy jednym tapnięciem „Update".
+
+## Konfiguracja
+
+Domyślnie: nazwa **„Mój Librus"**, bundle ID `com.olekd.mojlibrus`. Aby zmienić — edytuj
+`project.yml` (`PRODUCT_BUNDLE_IDENTIFIER`, `PRODUCT_NAME`) oraz `Resources/Info.plist`
+(`CFBundleDisplayName`). Bundle ID nie może kolidować z oficjalną apką Librusa.
+
+## Problemy
+
+- **`librus_captcha_needed` przy logowaniu** — Librus rzadko wymaga captchy. Zaloguj się
+  raz przez przeglądarkę na `synergia.librus.pl`, poczekaj kilka minut i spróbuj ponownie.
+- **„Nie udało się zalogować do skrzynki wiadomości"** — mostek do `wiadomosci.librus.pl`
+  jest najbardziej kruchą częścią (osobna sesja, XML). Reszta aplikacji działa niezależnie.
+  Jeśli błąd się powtarza, zgłoś zawartość — trzeba dostroić nazwy pól XML.
+- **Pusty plan lekcji** — sprawdź w Librusie, czy plan klasy jest publiczny
+  (`Student timetable is not public`).
+- **Build pada na `xcodegen` / wersji Xcode** — workflow pinuje `latest-stable`; w razie
+  potrzeby ustaw konkretną wersję w kroku *Select Xcode*.
+
+## Uwaga prawna
+
+Nieoficjalny klient. Odtwarza publiczne API aplikacji mobilnej Librus (te same stałe
+klienta OAuth, których używają inne projekty open-source, m.in. szkolny.eu). Wyłącznie do
+użytku własnego z własnym kontem. Nie jest powiązany z firmą Librus.
+
+## Architektura (skrót)
+
+```
+Sources/
+  Auth/      Keychain, Credentials, LibrusSession (actor: token + refresh)
+  Api/       Endpoints, APIError, LibrusAPI (1 metoda / endpoint)
+  Models/    Raw/  (Codable 1:1 z JSON) + View/ (modele złączone)
+  Store/     DataRepository (@Observable, łączenie po Id, cache), GradeMath, Cache
+  Messages/  MessagesClient (AutoLoginToken → sesja Synergia → wiadomosci XML)
+  Features/  ekrany SwiftUI (Login, Dashboard, Grades, Timetable, Attendance, …)
+Tests/       dekodowanie próbek JSON + testy średnich
+```
