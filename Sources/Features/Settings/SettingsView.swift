@@ -77,6 +77,8 @@ struct SettingsView: View {
 
             Section("O aplikacji") {
                 LabeledContent("Wersja", value: version)
+                LabeledContent("Widżet (App Group)", value: SharedStore.status)
+                    .font(.caption)
                 Text("Nieoficjalny klient Librus Synergia. Do użytku własnego. Łączy się bezpośrednio z api.librus.pl.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

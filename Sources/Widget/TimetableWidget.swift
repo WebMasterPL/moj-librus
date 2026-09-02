@@ -134,9 +134,16 @@ struct TimetableWidgetView: View {
             }
             if lessons.isEmpty {
                 Spacer()
-                Text(entry.day == nil ? "Otwórz aplikację, aby wczytać plan" : "Brak lekcji")
-                    .font(.footnote).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                VStack(spacing: 4) {
+                    Text(entry.day == nil ? "Otwórz aplikację i wejdź w Plan" : "Brak lekcji")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if entry.day == nil, family != .systemSmall {
+                        Text(SharedStore.status)
+                            .font(.caption2).foregroundStyle(.tertiary)
+                            .lineLimit(2).multilineTextAlignment(.center)
+                    }
+                }
+                .frame(maxWidth: .infinity)
                 Spacer()
             } else {
                 ForEach(lessons) { lesson in
