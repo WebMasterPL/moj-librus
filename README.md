@@ -17,9 +17,10 @@ przez **SideStore/AltStore** darmowym Apple ID.
 | Frekwencja — podsumowanie % + wpisy, filtr semestru | `.../2.0/Attendances` |
 | Ogłoszenia | `.../2.0/SchoolNotices` |
 | Zadania domowe | `.../2.0/HomeWorkAssignments` |
+| Terminarz (sprawdziany, kartkówki) | `.../2.0/HomeWorks` |
 | Uwagi | `.../2.0/Notes` |
 | Szczęśliwy numerek | `.../2.0/LuckyNumbers` |
-| Wiadomości (odczyt, *best-effort*) | mostek `synergia.librus.pl` → `wiadomosci.librus.pl` |
+| Wiadomości — odczyt **i odpowiadanie** (*best-effort*) | mostek `synergia.librus.pl` → `wiadomosci.librus.pl` |
 | Ustawienia → **Diagnostyka połączenia** — test każdego endpointu + kopiuj raport | — |
 | Powiadomienia o nowych ocenach (opcjonalne, *eksperymentalne*) | `BGAppRefreshTask` |
 
@@ -86,6 +87,9 @@ Domyślnie: nazwa **„Mój Librus"**, bundle ID `com.olekd.mojlibrus`. Aby zmie
 - **„Nie udało się zalogować do skrzynki wiadomości"** — mostek do `wiadomosci.librus.pl`
   jest najbardziej kruchą częścią (osobna sesja, XML). Reszta aplikacji działa niezależnie.
   Jeśli błąd się powtarza, zgłoś zawartość — trzeba dostroić nazwy pól XML.
+- **Odpowiadanie na wiadomości** działa tylko gdy z wiadomości uda się odczytać login
+  nadawcy; przed wysłaniem jest pytanie „do kogo + temat". Nie ma okna „nowa wiadomość"
+  ani wyboru odbiorców — świadomie, żeby nie wysłać czegoś przypadkiem.
 - **Pusty plan lekcji** — sprawdź w Librusie, czy plan klasy jest publiczny
   (`Student timetable is not public`).
 - **Build pada na `xcodegen` / wersji Xcode** — workflow pinuje `latest-stable`; w razie

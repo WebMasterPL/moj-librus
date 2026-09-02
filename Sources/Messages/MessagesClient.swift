@@ -108,13 +108,14 @@ actor MessagesClient {
                 ?? findFirst(root, named: "SendMessage") else {
             throw APIError.messageBridgeFailed("nieczytelna odpowiedź na wysyłkę")
         }
-        let status = node.childText("status") ?? ""
-        let newId = (node.firstNode(path: ["data"])?.text).flatMap { Int($0.filter(\.isNumber)) }
-            ?? node.childText("data").flatMap { Int($0.filter(\.isNumber)) }
-        guard status.lowercased() == "ok", let newId else {
+        let status = (node.childText("status") ?? "").lowercased()
+        // Trust `status` — if it says ok, the message went out even if we can't read the id.
+        guard status == "ok" else {
             throw APIError.messageBridgeFailed(node.childText("message") ?? "wysyłka odrzucona przez Librus")
         }
-        return newId
+        let newId = (node.firstNode(path: ["data"])?.text).flatMap { Int($0.filter(\.isNumber)) }
+            ?? node.childText("data").flatMap { Int($0.filter(\.isNumber)) }
+        return newId ?? 0
     }
 
     // MARK: - Session bridge
@@ -174,6 +175,12 @@ actor MessagesClient {
             }
             if text.contains("eAccessDeny") || text.contains("stop.png") {
                 throw APIError.messageBridgeFailed("brak dostępu do modułu wiadomości")
+            }
+            // Got an HTML page instead of XML -> the Synergia session lapsed.
+            let looksLikeXML = text.contains("<service") || text.contains("<response") || text.contains("<data")
+            if !looksLikeXML, text.localizedCaseInsensitiveContains("<html") || text.localizedCaseInsensitiveContains("login") {
+                sessionEstablishedAt = nil
+                throw APIError.messageBridgeFailed("sesja Synergii wygasła — spróbuj ponownie")
             }
             return body
         } catch let e as APIError {
