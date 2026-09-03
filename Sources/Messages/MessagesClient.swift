@@ -182,17 +182,17 @@ actor MessagesClient {
             throw APIError.messageBridgeFailed("brak dostepu do formularza wiadomosci - " + snippet(html))
         }
         var hidden: [String: String] = [:]
-        for m in HTTP.allMatches(REGEX_HIDDEN_INPUT, in: html) where m.count > 1 {
-            guard let name = HTTP.firstMatch(REGEX_NAME_ATTR, in: m[1]) else { continue }
-            let value = HTTP.firstMatch(REGEX_VALUE_ATTR, in: m[1]) ?? ""
+        for m in HTTP.allMatches(Self.REGEX_HIDDEN_INPUT, in: html) where m.count > 1 {
+            guard let name = HTTP.firstMatch(Self.REGEX_NAME_ATTR, in: m[1]) else { continue }
+            let value = HTTP.firstMatch(Self.REGEX_VALUE_ATTR, in: m[1]) ?? ""
             if hidden[name] == nil { hidden[name] = value }
         }
         if hidden["requestkey"] == nil,
-           let csrf = HTTP.firstMatch(REGEX_CSRF_JS, in: html) {
+           let csrf = HTTP.firstMatch(Self.REGEX_CSRF_JS, in: html) {
             hidden["requestkey"] = csrf
         }
-        let action = HTTP.firstMatch(REGEX_FORM_ACTION_NAMED, in: html)
-            ?? HTTP.firstMatch(REGEX_FORM_ACTION_ANY, in: html)
+        let action = HTTP.firstMatch(Self.REGEX_FORM_ACTION_NAMED, in: html)
+            ?? HTTP.firstMatch(Self.REGEX_FORM_ACTION_ANY, in: html)
             ?? "/wiadomosci/2/5"
         return ComposeForm(html: html, url: final,
                            action: Self.absolute(action, base: resp?.url), hidden: hidden)
@@ -212,10 +212,10 @@ actor MessagesClient {
     private static func parseCategories(_ html: String) -> [RecipientCategory] {
         var out: [RecipientCategory] = []
         var seen = Set<String>()
-        for m in HTTP.allMatches(REGEX_ADRESAT_RADIO, in: html) where m.count > 3 {
+        for m in HTTP.allMatches(Self.REGEX_ADRESAT_RADIO, in: html) where m.count > 3 {
             let value = m[1]
             guard seen.insert(value).inserted else { continue }
-            let nums = HTTP.allMatches(REGEX_DIGITS_2PLUS, in: m[2]).compactMap { $0.count > 1 ? $0[1] : nil }
+            let nums = HTTP.allMatches(Self.REGEX_DIGITS_2PLUS, in: m[2]).compactMap { $0.count > 1 ? $0[1] : nil }
             let classID = nums.last.flatMap { $0 == "0" ? nil : $0 }
             out.append(RecipientCategory(id: value,
                                          name: stripHTML(m[3]).nonEmpty ?? value,
@@ -259,15 +259,15 @@ actor MessagesClient {
         var people: [Recipient] = []
         var seen = Set<String>()
         var multiple = true
-        for m in HTTP.allMatches(REGEX_LINE_ROW, in: html) where m.count > 1 {
+        for m in HTTP.allMatches(Self.REGEX_LINE_ROW, in: html) where m.count > 1 {
             let row = m[1]
-            guard let tag = HTTP.firstMatch(REGEX_DOKOGO_INPUT, in: row),
-                  let value = HTTP.firstMatch(REGEX_VALUE_ATTR, in: tag),
+            guard let tag = HTTP.firstMatch(Self.REGEX_DOKOGO_INPUT, in: row),
+                  let value = HTTP.firstMatch(Self.REGEX_VALUE_ATTR, in: tag),
                   !value.isEmpty, value != "0", seen.insert(value).inserted else { continue }
-            let name = HTTP.firstMatch(REGEX_SPAN_TEXT, in: row).flatMap { stripHTML($0).nonEmpty }
-                ?? HTTP.firstMatch(REGEX_LABEL_TEXT, in: row).flatMap { stripHTML($0).nonEmpty }
+            let name = HTTP.firstMatch(Self.REGEX_SPAN_TEXT, in: row).flatMap { stripHTML($0).nonEmpty }
+                ?? HTTP.firstMatch(Self.REGEX_LABEL_TEXT, in: row).flatMap { stripHTML($0).nonEmpty }
                 ?? value
-            let role = HTTP.firstMatch(REGEX_IMG_TITLE, in: row).map(stripHTML)
+            let role = HTTP.firstMatch(Self.REGEX_IMG_TITLE, in: row).map(stripHTML)
             multiple = tag.range(of: "type=[\"']radio[\"']",
                                  options: [.regularExpression, .caseInsensitive]) == nil
             people.append(Recipient(id: value,
@@ -313,11 +313,11 @@ actor MessagesClient {
         let respHTML = String(data: respData, encoding: .utf8) ?? ""
         let finalURL = resp?.url?.absoluteString ?? ""
 
-        if respHTML.range(of: REGEX_SEND_OK, options: .regularExpression) != nil
+        if respHTML.range(of: Self.REGEX_SEND_OK, options: .regularExpression) != nil
             || finalURL.hasSuffix("/wiadomosci/5") || finalURL.hasSuffix("/wiadomosci/6") {
             return 0
         }
-        let err = Self.firstGroup(REGEX_SEND_ERROR, respHTML)
+        let err = Self.firstGroup(Self.REGEX_SEND_ERROR, respHTML)
         throw APIError.messageBridgeFailed(
             err.flatMap { Self.stripHTML($0).nonEmpty }
                 ?? "wysylka nie powiodla sie [\(resp?.statusCode ?? 0)] - " + snippet(respHTML, 300))
@@ -331,17 +331,17 @@ actor MessagesClient {
 
     private static func formDump(_ html: String) -> String {
         var out = ["\(html.count)B"]
-        if let tag = HTTP.firstMatch(REGEX_FORM_OPEN, in: html) {
+        if let tag = HTTP.firstMatch(Self.REGEX_FORM_OPEN, in: html) {
             out.append("form{" + collapse(tag).prefix(90) + "}")
         }
         var inputs = Set<String>()
-        for m in HTTP.allMatches(REGEX_INPUT_OPEN, in: html) where m.count > 1 {
-            guard let name = HTTP.firstMatch(REGEX_NAME_ATTR, in: m[1]) else { continue }
-            inputs.insert("\(name):\(HTTP.firstMatch(REGEX_TYPE_ATTR, in: m[1]) ?? "?")")
+        for m in HTTP.allMatches(Self.REGEX_INPUT_OPEN, in: html) where m.count > 1 {
+            guard let name = HTTP.firstMatch(Self.REGEX_NAME_ATTR, in: m[1]) else { continue }
+            inputs.insert("\(name):\(HTTP.firstMatch(Self.REGEX_TYPE_ATTR, in: m[1]) ?? "?")")
         }
         out.append("inputs{" + inputs.sorted().prefix(24).joined(separator: " ") + "}")
-        let areas = HTTP.allMatches(REGEX_TEXTAREA_OPEN, in: html)
-            .compactMap { $0.count > 1 ? HTTP.firstMatch(REGEX_NAME_ATTR, in: $0[1]) : nil }
+        let areas = HTTP.allMatches(Self.REGEX_TEXTAREA_OPEN, in: html)
+            .compactMap { $0.count > 1 ? HTTP.firstMatch(Self.REGEX_NAME_ATTR, in: $0[1]) : nil }
         if !areas.isEmpty { out.append("textarea{" + areas.joined(separator: " ") + "}") }
         return out.joined(separator: " - ")
     }
