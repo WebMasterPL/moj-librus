@@ -18,3 +18,9 @@ xcuserdata/
 # Local dev
 .vscode/
 *.log
+
+# Local Librus captures — contain teacher names / IDs / session cookies
+adresaci*
+*.har
+*-request.txt*
+*.curl
