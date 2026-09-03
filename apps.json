@@ -12,12 +12,21 @@
       "iconURL": "https://raw.githubusercontent.com/WebMasterPL/moj-librus/main/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
       "tintColor": "0B818B",
       "category": "education",
-      "version": "1.6.11",
+      "version": "1.6.12",
       "versionDate": "2026-09-03",
-      "versionDescription": "Wersja 1.6.11 (build 1062).",
+      "versionDescription": "Wersja 1.6.12 (build 1064).",
       "downloadURL": "https://github.com/WebMasterPL/moj-librus/releases/latest/download/MojLibrus.ipa",
-      "size": 1048764,
+      "size": 1089695,
       "versions": [
+        {
+          "version": "1.6.12",
+          "buildVersion": "1064",
+          "date": "2026-09-03",
+          "localizedDescription": "Wersja 1.6.12 (build 1064).",
+          "downloadURL": "https://github.com/WebMasterPL/moj-librus/releases/latest/download/MojLibrus.ipa",
+          "size": 1089695,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "1.6.11",
           "buildVersion": "1062",
