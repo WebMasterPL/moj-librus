@@ -122,7 +122,7 @@ actor MessagesClient {
     /// Body of the last `synergia.librus.pl/wiadomosci` page fetch (for `probe()`).
     private var lastSPABody = ""
 
-    func invalidateSession() { sessionEstablishedAt = nil; dzienniksid = nil }
+    func invalidateSession() { sessionEstablishedAt = nil; dzienniksid = nil; lastSPABody = "" }
 
     // MARK: - Deep diagnostic
 
@@ -143,9 +143,23 @@ actor MessagesClient {
         var lines: [String] = ["sesja OK · \(lastTrail)"]
         lines.append("cookies: " + cookieInventory())
         lines.append("hint: " + (loginHintURL() ?? "(brak)"))
-        lines.append("spa: " + Self.pageMarkers(lastSPABody))
-        lines.append("spa-head: " + snippet(lastSPABody, 400))
         lines.append("apiToken \(tag(apiToken)) · oauthCk \(tag(oauthCk))")
+
+        // Pull apart the real messages web app: its markup, then its JS bundle(s),
+        // hunting for the API base URL and the auth header it uses.
+        lines.append("spa: " + Self.pageMarkers(lastSPABody))
+        lines.append("spa-head: " + snippet(lastSPABody, 360))
+        let scripts = HTTP.allMatches(#"<script[^>]+src=["']([^"']+)["']"#, in: lastSPABody)
+            .compactMap { $0.count > 1 ? $0[1] : nil }
+            .filter { $0.contains("librus") || $0.hasPrefix("/") }
+        lines.append("scripts: " + (scripts.isEmpty ? "(brak)" : scripts.prefix(6).joined(separator: " ")))
+        for src in scripts.prefix(3) {
+            let jsURL = URL(string: src, relativeTo: URL(string: "https://synergia.librus.pl/wiadomosci"))?
+                .absoluteString ?? src
+            guard let (jsData, jsResp) = try? await get(jsURL) else { continue }
+            let js = String(data: jsData, encoding: .utf8) ?? ""
+            lines.append("js \(shortPath(jsURL)) [\(jsResp?.statusCode ?? 0)] \(js.count)B: " + Self.jsAPIHints(js))
+        }
 
         let api = "https://wiadomosci.librus.pl/api"
         let xml = "<service><header></header><data><archive>0</archive></data></service>"
@@ -172,6 +186,25 @@ actor MessagesClient {
     }
 
     private func tag(_ s: String) -> String { s.isEmpty ? "brak" : String(s.prefix(6)) + "…" }
+
+    /// Grep a JS bundle for anything that reveals the messages API base + auth scheme.
+    private static func jsAPIHints(_ js: String) -> String {
+        var found = Set<String>()
+        for m in HTTP.allMatches(#"["'](https?://[a-z0-9.\-]*librus\.pl(?:/[a-z0-9/_.\-]{0,50})?)["']"#, in: js)
+            .compactMap({ $0.count > 1 ? $0[1] : nil }) {
+            found.insert(m)
+        }
+        for m in HTTP.allMatches(#"["'](/api/[a-z0-9/_.\-{}$:]{2,50})["']"#, in: js)
+            .compactMap({ $0.count > 1 ? $0[1] : nil }) {
+            found.insert(m)
+        }
+        for kw in ["Authorization", "Bearer ", "X-Auth-Token", "X-Api-Key", "x-api-key",
+                   "access_token", "grant_type", "withCredentials", "SDZIENNIKSID", "DZIENNIKSID",
+                   "wiadomosci.librus.pl", "/api/inbox", "/api/messages", "csrf", "XSRF"] {
+            if js.range(of: kw) != nil { found.insert("kw:\(kw.trimmingCharacters(in: .whitespaces))") }
+        }
+        return found.isEmpty ? "(nic)" : found.sorted().prefix(16).joined(separator: " ")
+    }
 
     private struct Probe {
         let label: String
@@ -317,39 +350,16 @@ actor MessagesClient {
             let (data, resp) = try await get(bridge)
             let body = String(data: data, encoding: .utf8) ?? ""
             lastBody = body
+            // Keep the FIRST synergia .../wiadomosci page verbatim — later requests
+            // (especially anything touching /loguj) can invalidate the messages session.
             let finalURL = resp?.url?.absoluteString ?? ""
-            // Keep the actual messages-app page (synergia .../wiadomosci, 200) —
-            // not whatever bigger login page a later hop lands on.
-            if finalURL.contains("synergia.librus.pl/wiadomosci") { lastSPABody = body }
-            else if lastSPABody.isEmpty { lastSPABody = body }
+            if lastSPABody.isEmpty, finalURL.contains("synergia.librus.pl/wiadomosci") {
+                lastSPABody = body
+            }
             note("\(shortPath(bridge)) [\(resp?.statusCode ?? 0)] \(shortPath(finalURL)) \(body.count)B")
             try checkBlockers(body)
             try await followHTMLHops(from: resp?.url, body: body, note: note)
             if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
-
-            let sso = Self.wiadomosciLinks(in: body)
-            if !sso.isEmpty { note("sso[" + sso.prefix(4).map(shortPath).joined(separator: ",") + "]") }
-            for link in sso.prefix(6) {
-                _ = try? await get(link)
-                if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
-            }
-            if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
-        }
-
-        // 2b. Synergia parked an `access_denied_login_url` cookie — that's exactly
-        //     where it wants us to authenticate for the module. Follow it.
-        if let hint = loginHintURL() {
-            note("hint→\(shortPath(hint))")
-            if let (hintData, hintResp) = try? await get(hint) {
-                note("hint [\(hintResp?.statusCode ?? 0)] \(shortPath(hintResp?.url?.absoluteString ?? ""))")
-                let hintBody = String(data: hintData, encoding: .utf8) ?? ""
-                _ = try? await followHTMLHops(from: hintResp?.url, body: hintBody, note: note)
-            }
-            if let (d, r) = try? await get("https://synergia.librus.pl/wiadomosci") {
-                let b = String(data: d, encoding: .utf8) ?? ""
-                note("post-hint /wiadomosci [\(r?.statusCode ?? 0)] \(shortPath(r?.url?.absoluteString ?? "")) \(b.count)B")
-                if (r?.url?.absoluteString ?? "").contains("synergia.librus.pl/wiadomosci") { lastSPABody = b }
-            }
         }
 
         // 3. One more plain GET so wiadomosci.librus.pl finalises the session cookie.
