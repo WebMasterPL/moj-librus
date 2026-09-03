@@ -153,15 +153,27 @@ actor MessagesClient {
         }
         note("synergia-sid")
 
-        // 2. Cross into wiadomosci.librus.pl. Librus does this with a MultiDomainLogon
-        //    dance that can be a plain 302 chain OR a meta-refresh / auto-submit form,
-        //    so we follow HTML hops too. Try the current path, then the legacy one.
-        for bridge in ["https://synergia.librus.pl/wiadomosci", "https://synergia.librus.pl/wiadomosci2"] {
+        // 2. Cross into wiadomosci.librus.pl. Older Librus did a 302 / meta-refresh
+        //    chain; the current Synergia serves /wiadomosci as a full SPA that logs
+        //    into wiadomosci.librus.pl through a hidden iframe / background request.
+        //    So: follow HTML hops AND hit every wiadomosci.librus.pl link on the page.
+        var lastBody = ""
+        for bridge in ["https://synergia.librus.pl/wiadomosci",
+                       "https://synergia.librus.pl/wiadomosci2"] {
             let (data, resp) = try await get(bridge)
             let body = String(data: data, encoding: .utf8) ?? ""
-            note("\(shortPath(bridge)) [\(resp?.statusCode ?? 0)] \(shortPath(resp?.url?.absoluteString ?? ""))")
+            lastBody = body
+            note("\(shortPath(bridge)) [\(resp?.statusCode ?? 0)] \(shortPath(resp?.url?.absoluteString ?? "")) \(body.count)B")
             try checkBlockers(body)
             try await followHTMLHops(from: resp?.url, body: body, note: note)
+            if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
+
+            let sso = Self.wiadomosciLinks(in: body)
+            if !sso.isEmpty { note("sso[" + sso.prefix(4).map(shortPath).joined(separator: ",") + "]") }
+            for link in sso.prefix(6) {
+                _ = try? await get(link)
+                if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
+            }
             if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
         }
 
@@ -171,7 +183,7 @@ actor MessagesClient {
         let raw = cookie("DZIENNIKSID", domainContains: "wiadomosci")
             ?? cookie("DZIENNIKSID", domainContains: "")
         guard var sid = raw, !sid.isEmpty else {
-            throw APIError.messageBridgeFailed("brak DZIENNIKSID wiadomości · \(lastTrail)")
+            throw APIError.messageBridgeFailed("brak DZIENNIKSID wiadomości · \(lastTrail) · " + snippet(lastBody))
         }
         sid = sid.replacingOccurrences(of: "-MAINT", with: "").replacingOccurrences(of: "MAINT", with: "")
         dzienniksid = sid
@@ -199,23 +211,54 @@ actor MessagesClient {
         for _ in 0..<maxHops {
             guard let hop = Self.htmlRedirect(in: currentBody, base: currentURL) else { return }
             note("hop→\(shortPath(hop.url.absoluteString))")
-            let data: Data, resp: HTTPURLResponse?
+            let result: (Data, HTTPURLResponse?)
             if hop.isPost {
-                (data, resp) = try await post(hop.url.absoluteString, form: hop.fields)
+                result = try await post(hop.url.absoluteString, form: hop.fields)
             } else {
-                (data, resp) = try await get(hop.url.absoluteString)
+                result = try await get(hop.url.absoluteString)
             }
-            currentBody = String(data: data, encoding: .utf8) ?? ""
-            currentURL = resp?.url
+            currentBody = String(data: result.0, encoding: .utf8) ?? ""
+            currentURL = result.1?.url
             try checkBlockers(currentBody)
         }
     }
 
     private struct HTMLHop { let url: URL; let isPost: Bool; let fields: [String: String] }
 
+    /// Every distinct `wiadomosci.librus.pl` URL referenced by the page, login-ish
+    /// ones first, static assets (js/css/images) last.
+    private static func wiadomosciLinks(in html: String) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for m in HTTP.allMatches(#"wiadomosci\.librus\.pl(/[^\s"'<>()\\]*)"#, in: html) where m.count > 1 {
+            let pathPart = m[1].replacingOccurrences(of: "\\/", with: "/")
+                .replacingOccurrences(of: "&amp;", with: "&")
+            let url = "https://wiadomosci.librus.pl" + pathPart
+            guard seen.insert(url).inserted else { continue }
+            out.append(url)
+        }
+        return out.sorted { ssoScore($0) < ssoScore($1) }
+    }
+
+    private static func ssoScore(_ s: String) -> Int {
+        let l = s.lowercased()
+        if l.contains("autologon") || l.contains("autologin") || l.contains("multidomain") { return 0 }
+        if l.contains("login") || l.contains("loguj") || l.contains("logowanie") || l.contains("auth") { return 1 }
+        if l.hasSuffix(".js") || l.hasSuffix(".css") || l.hasSuffix(".png") || l.hasSuffix(".svg")
+            || l.hasSuffix(".woff") || l.hasSuffix(".woff2") || l.hasSuffix(".ico")
+            || l.contains("/assets/") || l.contains("/build/") || l.contains("/static/") { return 9 }
+        return 5
+    }
+
     private static func htmlRedirect(in html: String, base: URL?) -> HTMLHop? {
-        // Only redirect *stub* pages qualify — real Librus pages are tens of KB and
-        // would false-positive on tracking scripts / markup.
+        // Hidden iframe used for cross-domain SSO — present even on large SPA pages.
+        if let m = HTTP.firstMatch(#"<iframe[^>]+src=["']([^"']*(?:AutoLogon|autologin|MultiDomain|przenies|loguj|wiadomosci\.librus)[^"']*)["']"#, in: html),
+           let u = URL(string: m.replacingOccurrences(of: "&amp;", with: "&"), relativeTo: base) {
+            return HTMLHop(url: u, isPost: false, fields: [:])
+        }
+
+        // Beyond the iframe, only redirect *stub* pages qualify — real Librus pages
+        // are tens of KB and would false-positive on tracking scripts / markup.
         guard html.count < 4000 else { return nil }
 
         if let m = HTTP.firstMatch(#"http-equiv=["']refresh["'][^>]*content=["'][^"']*?url=([^"'\s]+)"#, in: html),

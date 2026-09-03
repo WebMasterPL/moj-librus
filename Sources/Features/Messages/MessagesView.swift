@@ -22,7 +22,9 @@ struct MessagesView: View {
 
             ForEach(repo.messagesInbox) { message in
                 let unread = !repo.isMessageRead(message)
-                NavigationLink(value: message) {
+                NavigationLink {
+                    MessageDetailView(message: message)
+                } label: {
                     HStack(alignment: .top, spacing: Theme.Space.md) {
                         Circle()
                             .fill(unread ? Color.accentColor : Color.clear)
@@ -65,7 +67,6 @@ struct MessagesView: View {
         .scrollContentBackground(.hidden)
         .background(Color.appGroupedBackground.ignoresSafeArea())
         .navigationTitle("Wiadomości")
-        .navigationDestination(for: MessageItem.self) { MessageDetailView(message: $0) }
         .refreshable { await repo.loadMessages() }
         .task {
             if !didLoad {

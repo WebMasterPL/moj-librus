@@ -55,7 +55,9 @@ struct GradesView: View {
             ForEach(visibleSubjects) { subject in
                 Section {
                     ForEach(subject.filtered(filter, current: current)) { grade in
-                        NavigationLink(value: grade) {
+                        NavigationLink {
+                            GradeDetailView(grade: grade)
+                        } label: {
                             GradeRow(grade: grade, isNew: repo.isGradeUnseen(grade))
                         }
                     }
@@ -86,7 +88,6 @@ struct GradesView: View {
         .scrollContentBackground(.hidden)
         .background(Color.appGroupedBackground.ignoresSafeArea())
         .navigationTitle("Oceny")
-        .navigationDestination(for: GradeItem.self) { GradeDetailView(grade: $0) }
         .refreshable { await repo.refreshCore() }
         .onDisappear { repo.markGradesSeen() }
         .sheet(item: $simulatorSubject) { subject in

@@ -1,14 +1,21 @@
 import SwiftUI
+import Foundation
 
 struct TimetableView: View {
     @Environment(DataRepository.self) private var repo
 
     @State private var weekStart = LibrusDate.defaultTimetableWeekStart()
     @State private var isLoading = false
+    @State private var jumpTick = 0
 
     private var weekKey: String { LibrusDate.ymdString(weekStart) }
     private var days: [TimetableDay] { repo.timetableWeeks[weekKey] ?? [] }
     private var isCurrentWeek: Bool { LibrusDate.isSameDay(weekStart, LibrusDate.weekStart()) }
+
+    /// `id` of today's day card, when the shown week actually contains today.
+    private var todayID: Date? {
+        days.first { LibrusDate.isSameDay($0.date, Date()) }?.date
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,13 +37,19 @@ struct TimetableView: View {
                         .frame(maxHeight: .infinity)
                 }
             } else {
-                ScrollView {
-                    VStack(spacing: Theme.Space.lg) {
-                        ForEach(days) { day in
-                            dayCard(day)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: Theme.Space.lg) {
+                            ForEach(days) { day in
+                                dayCard(day).id(day.date)
+                            }
                         }
+                        .padding(Theme.Space.lg)
                     }
-                    .padding(Theme.Space.lg)
+                    .onAppear { jumpToToday(proxy, animated: false) }
+                    .onChange(of: weekKey) { jumpToToday(proxy, animated: false) }
+                    .onChange(of: days.count) { jumpToToday(proxy, animated: false) }
+                    .onChange(of: jumpTick) { jumpToToday(proxy, animated: true) }
                 }
             }
         }
@@ -48,12 +61,24 @@ struct TimetableView: View {
                 Button("Dziś") {
                     Haptics.tap()
                     withAnimation(Theme.Motion.standard) { weekStart = LibrusDate.weekStart() }
+                    jumpTick &+= 1
                 }
-                .disabled(isCurrentWeek)
             }
         }
         .task(id: weekKey) { await loadIfNeeded() }
         .refreshable { await load() }
+    }
+
+    private func jumpToToday(_ proxy: ScrollViewProxy, animated: Bool) {
+        let id = todayID
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard let id else { return }
+            if animated {
+                withAnimation(Theme.Motion.standard) { proxy.scrollTo(id, anchor: .top) }
+            } else {
+                proxy.scrollTo(id, anchor: .top)
+            }
+        }
     }
 
     private var weekSwitcher: some View {

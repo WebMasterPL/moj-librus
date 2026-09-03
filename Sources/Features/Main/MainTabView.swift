@@ -62,10 +62,10 @@ struct MoreView: View {
                 row("Ogłoszenia", "megaphone.fill", .orange, badge: repo.unreadAnnouncementCount) {
                     AnnouncementsView()
                 }
-                row("Terminarz", "calendar.badge.clock", .red, badge: repo.upcomingEventCount) {
+                row("Terminarz", "calendar.badge.clock", .red) {
                     EventsView()
                 }
-                row("Uwagi", "exclamationmark.bubble.fill", .purple, badge: repo.notes.count) {
+                row("Uwagi", "exclamationmark.bubble.fill", .purple) {
                     NotesView()
                 }
                 row("Wiadomości", "envelope.fill", .blue, badge: repo.unreadMessageCount) {

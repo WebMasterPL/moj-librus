@@ -55,15 +55,6 @@ struct DashboardView: View {
             .padding(Theme.Space.lg)
         }
         .screenBackground()
-        .navigationDestination(for: DashboardRoute.self) { route in
-            switch route {
-            case .timetable: TimetableView()
-            case .grades: GradesView()
-            case .announcements: AnnouncementsView()
-            case .events: EventsView()
-            case .messages: MessagesView()
-            }
-        }
         .navigationTitle(repo.studentName.isEmpty ? "Pulpit" : repo.studentName)
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
@@ -146,7 +137,9 @@ struct DashboardView: View {
 
     private var todayCard: some View {
         SectionCard("Plan na dziś", systemImage: "calendar") {
-            NavigationLink(value: DashboardRoute.timetable) {
+            NavigationLink {
+                TimetableView()
+            } label: {
                 Text("Cały tydzień").font(.caption.weight(.semibold))
             }
         } content: {
@@ -184,7 +177,9 @@ struct DashboardView: View {
 
     private var recentGradesCard: some View {
         SectionCard("Ostatnie oceny", systemImage: "checkmark.seal") {
-            NavigationLink(value: DashboardRoute.grades) {
+            NavigationLink {
+                GradesView()
+            } label: {
                 Text("Wszystkie").font(.caption.weight(.semibold))
             }
         } content: {
@@ -241,23 +236,19 @@ struct DashboardView: View {
 
     private var countersRow: some View {
         HStack(spacing: Theme.Space.md) {
-            NavigationLink(value: DashboardRoute.announcements) {
+            NavigationLink {
+                AnnouncementsView()
+            } label: {
                 StatTile(value: "\(repo.unreadAnnouncementCount)", label: "Ogłoszenia",
                          color: .accentColor, systemImage: "megaphone.fill")
             }
-            NavigationLink(value: DashboardRoute.events) {
-                StatTile(value: "\(repo.upcomingEventCount)", label: "Terminarz",
-                         color: .accentColor, systemImage: "calendar.badge.clock")
-            }
-            NavigationLink(value: DashboardRoute.messages) {
+            NavigationLink {
+                MessagesView()
+            } label: {
                 StatTile(value: "\(repo.unreadMessageCount)", label: "Wiadomości",
                          color: .accentColor, systemImage: "envelope.fill")
             }
         }
         .buttonStyle(.plain)
     }
-}
-
-enum DashboardRoute: Hashable {
-    case timetable, grades, announcements, events, messages
 }

@@ -10,7 +10,9 @@ struct AnnouncementsView: View {
             }
             ForEach(repo.announcements) { item in
                 let read = repo.isAnnouncementRead(item)
-                NavigationLink(value: item) {
+                NavigationLink {
+                    AnnouncementDetailView(item: item)
+                } label: {
                     HStack(alignment: .top, spacing: Theme.Space.md) {
                         Circle()
                             .fill(read ? Color.clear : Color.accentColor)
@@ -46,7 +48,6 @@ struct AnnouncementsView: View {
         .scrollContentBackground(.hidden)
         .background(Color.appGroupedBackground.ignoresSafeArea())
         .navigationTitle("Ogłoszenia")
-        .navigationDestination(for: AnnouncementItem.self) { AnnouncementDetailView(item: $0) }
         .refreshable { await repo.refreshCore() }
     }
 }
