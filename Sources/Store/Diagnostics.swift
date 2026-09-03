@@ -76,8 +76,10 @@ struct Diagnostics {
             return DiagnosticResult(name: "Wiadomości (mostek)", ok: true,
                                     detail: "\(list.count) wiadomości w skrzynce")
         } catch {
-            let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
-            return DiagnosticResult(name: "Wiadomości (mostek)", ok: false, detail: msg)
+            // Deep probe: try every candidate inbox endpoint and report what each
+            // returns, so we can see which API the current Librus serves.
+            let report = await client.probe()
+            return DiagnosticResult(name: "Wiadomości (mostek)", ok: false, detail: report)
         }
     }
 

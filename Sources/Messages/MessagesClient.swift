@@ -119,8 +119,92 @@ actor MessagesClient {
     /// Human-readable trace of the last `ensureSession()` run — attached to
     /// downstream errors so the Diagnostics report shows where the bridge broke.
     private(set) var lastTrail = ""
+    /// Body of the last `synergia.librus.pl/wiadomosci` page fetch (for `probe()`).
+    private var lastSPABody = ""
 
     func invalidateSession() { sessionEstablishedAt = nil; dzienniksid = nil }
+
+    // MARK: - Deep diagnostic
+
+    /// Establishes the session, then probes candidate inbox endpoints and reports
+    /// what each returns. Used by the Diagnostics screen when `inbox()` fails, so a
+    /// remote user's report tells us which API the current Librus actually serves.
+    func probe() async -> String {
+        do {
+            invalidateSession()
+            try await ensureSession()
+        } catch {
+            return "sesja BŁĄD · \(lastTrail) · "
+                + ((error as? LocalizedError)?.errorDescription ?? "\(error)")
+        }
+        var lines: [String] = ["sesja OK · \(lastTrail)"]
+        lines.append("cookies: " + cookieInventory())
+        lines.append("spa: " + Self.pageMarkers(lastSPABody))
+        lines.append("spa-head: " + snippet(lastSPABody, 220))
+
+        let xml = "<service><header></header><data><archive>0</archive></data></service>"
+        let candidates: [(String, String, String?)] = [
+            ("module/Inbox/action/GetList", "https://wiadomosci.librus.pl/module/Inbox/action/GetList", xml),
+            ("synergia /wiadomosci/api/inbox/messages", "https://synergia.librus.pl/wiadomosci/api/inbox/messages", nil),
+            ("wiadomosci /api/inbox/messages", "https://wiadomosci.librus.pl/api/inbox/messages", nil),
+            ("wiadomosci /api/messages?folder=inbox", "https://wiadomosci.librus.pl/api/messages?folder=inbox", nil),
+            ("wiadomosci /api/v1/inbox", "https://wiadomosci.librus.pl/api/v1/inbox", nil),
+        ]
+        for (name, url, xmlBody) in candidates {
+            lines.append("· \(name): " + (await probeOne(url: url, xmlBody: xmlBody)))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func probeOne(url: String, xmlBody: String?) async -> String {
+        guard let u = URL(string: url) else { return "zły URL" }
+        var req = URLRequest(url: u)
+        req.setValue(Librus.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        req.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        if let sid = dzienniksid { req.setValue("DZIENNIKSID=\(sid)", forHTTPHeaderField: "Cookie") }
+        if let xmlBody {
+            req.httpMethod = "POST"
+            req.setValue("application/xml", forHTTPHeaderField: "Content-Type")
+            req.httpBody = Data(xmlBody.utf8)
+        } else {
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+        }
+        do {
+            let (data, resp) = try await http.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let text = String(data: data, encoding: .utf8) ?? ""
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let kind: String
+            if text.contains("<loginUrl>") { kind = "loginUrl" }
+            else if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") { kind = "JSON" }
+            else if text.contains("<error") { kind = "error-xml" }
+            else if text.contains("<html") || text.contains("<!DOCTYPE") { kind = "HTML" }
+            else if text.contains("<") { kind = "XML" }
+            else { kind = "text" }
+            return "[\(code)] \(data.count)B \(kind) " + snippet(data, 260)
+        } catch {
+            return "wyjątek: \(error.localizedDescription)"
+        }
+    }
+
+    private func cookieInventory() -> String {
+        let all = http.configuration.httpCookieStorage?.cookies ?? []
+        guard !all.isEmpty else { return "(brak)" }
+        return all.map { "\($0.name)@\($0.domain)=\($0.value.prefix(4))…" }.joined(separator: " ")
+    }
+
+    private static func pageMarkers(_ body: String) -> String {
+        guard !body.isEmpty else { return "(pusta)" }
+        var out = ["\(body.count)B"]
+        for key in ["iframe", "wiadomosci.librus.pl", "/api/", "Bearer", "access_token",
+                    "csrf", "apiUrl", "api_url", "window.__", "app.js", "main.js", "runtime"] {
+            if body.range(of: key, options: .caseInsensitive) != nil { out.append(key) }
+        }
+        let urls = Set(HTTP.allMatches(#"(https://[a-z0-9.\-]+\.librus\.pl/[^\s"'<>()\\]{0,70})"#, in: body)
+            .compactMap { $0.count > 1 ? $0[1] : nil })
+        if !urls.isEmpty { out.append("urls{" + urls.sorted().prefix(8).joined(separator: " ") + "}") }
+        return out.joined(separator: ",")
+    }
 
     private func ensureSession() async throws {
         if let at = sessionEstablishedAt, dzienniksid != nil,
@@ -163,6 +247,7 @@ actor MessagesClient {
             let (data, resp) = try await get(bridge)
             let body = String(data: data, encoding: .utf8) ?? ""
             lastBody = body
+            if body.count > lastSPABody.count { lastSPABody = body }
             note("\(shortPath(bridge)) [\(resp?.statusCode ?? 0)] \(shortPath(resp?.url?.absoluteString ?? "")) \(body.count)B")
             try checkBlockers(body)
             try await followHTMLHops(from: resp?.url, body: body, note: note)
@@ -397,11 +482,14 @@ actor MessagesClient {
         return nil
     }
 
-    private func snippet(_ data: Data) -> String { snippet(String(data: data, encoding: .utf8) ?? "") }
-    private func snippet(_ text: String) -> String {
+    private func snippet(_ data: Data, _ max: Int = 180) -> String {
+        snippet(String(data: data, encoding: .utf8) ?? "", max)
+    }
+    private func snippet(_ text: String, _ max: Int = 180) -> String {
         let flat = text.replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\t", with: " ")
-        return String(flat.prefix(180))
+            .replacingOccurrences(of: "  ", with: " ")
+        return String(flat.prefix(max))
     }
 
     private func shortPath(_ url: String) -> String {
