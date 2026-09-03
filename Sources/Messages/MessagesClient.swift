@@ -617,33 +617,74 @@ actor MessagesClient {
     }
 
     private static func stripHTML(_ s: String) -> String {
-        s.replacingOccurrences(of: #"(?s)<[^>]+>"#, with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&#039;", with: "'")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
+        decodeEntities(s.replacingOccurrences(of: #"(?s)<[^>]+>"#, with: " ", options: .regularExpression))
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func cleanup(_ html: String) -> String {
-        html
-            .replacingOccurrences(of: "<![CDATA[", with: "")
-            .replacingOccurrences(of: "]]>", with: "")
-            .replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
-            .replacingOccurrences(of: #"(?i)</p>"#, with: "\n\n", options: .regularExpression)
-            .replacingOccurrences(of: #"(?s)<[^>]+>"#, with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&#039;", with: "'")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        Self.decodeEntities(
+            html
+                .replacingOccurrences(of: "<![CDATA[", with: "")
+                .replacingOccurrences(of: "]]>", with: "")
+                .replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
+                .replacingOccurrences(of: #"(?i)</p>"#, with: "\n\n", options: .regularExpression)
+                .replacingOccurrences(of: #"(?s)<[^>]+>"#, with: "", options: .regularExpression)
+        )
+        .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+        .replacingOccurrences(of: #"[ \t]+\n"#, with: "\n", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// Decode HTML entities Librus emits — numeric (`&#243;` / `&#xF3;`) plus the
+    /// named ones that show up in Polish names ("rodzic&oacute;w" -> "rodziców").
+    private static func decodeEntities(_ s: String) -> String {
+        guard s.contains("&") else { return s }
+        var out = s
+        for (name, ch) in namedEntities {
+            if out.contains(name) { out = out.replacingOccurrences(of: name, with: ch) }
+        }
+        // &#243;  and  &#xF3;
+        for pattern in [#"&#(\d+);"#, #"&#[xX]([0-9A-Fa-f]+);"#] {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
+            let ns = out as NSString
+            var result = ""
+            var last = 0
+            for m in re.matches(in: out, range: NSRange(location: 0, length: ns.length)) {
+                result += ns.substring(with: NSRange(location: last, length: m.range.location - last))
+                let digits = ns.substring(with: m.range(at: 1))
+                let radix = pattern.contains("x") ? 16 : 10
+                if let code = UInt32(digits, radix: radix), let scalar = Unicode.Scalar(code) {
+                    result.append(Character(scalar))
+                } else {
+                    result += ns.substring(with: m.range)
+                }
+                last = m.range.location + m.range.length
+            }
+            result += ns.substring(from: last)
+            out = result
+        }
+        return out
+    }
+
+    private static let namedEntities: [(String, String)] = [
+        ("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+        ("&quot;", "\""), ("&apos;", "'"), ("&#039;", "'"), ("&#39;", "'"),
+        ("&oacute;", "ó"), ("&Oacute;", "Ó"),
+        ("&aacute;", "á"), ("&eacute;", "é"), ("&iacute;", "í"), ("&uacute;", "ú"),
+        ("&aogon;", "ą"), ("&Aogon;", "Ą"), ("&eogon;", "ę"), ("&Eogon;", "Ę"),
+        ("&lstrok;", "ł"), ("&Lstrok;", "Ł"),
+        ("&nacute;", "ń"), ("&Nacute;", "Ń"),
+        ("&sacute;", "ś"), ("&Sacute;", "Ś"),
+        ("&cacute;", "ć"), ("&Cacute;", "Ć"),
+        ("&zacute;", "ź"), ("&Zacute;", "Ź"),
+        ("&zdot;", "ż"), ("&Zdot;", "Ż"),
+        ("&ndash;", "–"), ("&mdash;", "—"), ("&hellip;", "…"),
+        ("&raquo;", "»"), ("&laquo;", "«"),
+        ("&rsquo;", "’"), ("&lsquo;", "‘"), ("&rdquo;", "”"), ("&ldquo;", "„"),
+        ("&bull;", "•"), ("&middot;", "·"), ("&deg;", "°"),
+        ("&copy;", "©"), ("&reg;", "®"), ("&trade;", "™"), ("&euro;", "€"),
+    ]
 
     private func snippet(_ data: Data, _ max: Int = 200) -> String {
         snippet(String(data: data, encoding: .utf8) ?? "", max)
