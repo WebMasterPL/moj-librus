@@ -84,14 +84,65 @@ actor MessagesClient {
     /// People this account may write to, read off the Synergia compose form.
     func recipients() async throws -> [Recipient] {
         try await ensureSynergiaSession()
-        let (data, _) = try await get(Self.composeURL)
-        let html = String(data: data, encoding: .utf8) ?? ""
-        let found = Self.parseRecipients(html)
-        guard !found.isEmpty else {
-            throw APIError.messageBridgeFailed(
-                "nie znalazłem listy odbiorców w formularzu · " + Self.formRegion(html))
+        return Self.parseRecipients(try await composeForm().html)
+    }
+
+    /// Locate the "new message" page by following the compose link off the inbox
+    /// (Librus moves it between releases), then fall back to the known shapes.
+    private func composeForm() async throws -> (html: String, url: String) {
+        var candidates: [String] = []
+        if let (listData, _) = try? await get("https://synergia.librus.pl/wiadomosci") {
+            candidates = Self.composeLinks(in: String(data: listData, encoding: .utf8) ?? "")
         }
-        return found
+        for fallback in ["https://synergia.librus.pl/wiadomosci/2/6",
+                         "https://synergia.librus.pl/wiadomosci/2/5",
+                         "https://synergia.librus.pl/wiadomosci/2"]
+        where !candidates.contains(fallback) {
+            candidates.append(fallback)
+        }
+
+        var tried: [String] = []
+        for url in candidates.prefix(8) {
+            guard let (data, resp) = try? await get(url) else { continue }
+            let html = String(data: data, encoding: .utf8) ?? ""
+            if !Self.parseRecipients(html).isEmpty { return (html, url) }
+            tried.append("\(shortPath(url))[\(resp?.statusCode ?? 0)] \(Self.formMarkers(html))")
+        }
+        throw APIError.messageBridgeFailed(
+            "nie znalazłem formularza nowej wiadomości · sprawdzone: "
+                + (tried.isEmpty ? "(żaden adres nie odpowiedział)" : tried.joined(separator: " | ")))
+    }
+
+    /// Links on the inbox page that could open the compose view — text-matched
+    /// ones ("Napisz wiadomość") first, then any `/wiadomosci/2…` href.
+    private static func composeLinks(in html: String) -> [String] {
+        var byText: [String] = []
+        var byHref: [String] = []
+        var seen = Set<String>()
+        let base = URL(string: "https://synergia.librus.pl/wiadomosci")
+
+        for m in HTTP.allMatches(
+            #"<a[^>]+href=["']([^"']+)["'][^>]*>([^<]*(?:[Nn]apisz|[Nn]owa wiadomo|[Uu]twórz)[^<]*)</a>"#,
+            in: html) where m.count > 1 {
+            guard seen.insert(m[1]).inserted else { continue }
+            byText.append(absolute(m[1], base: base))
+        }
+        for m in HTTP.allMatches(#"<a[^>]+href=["']([^"']*wiadomosci/2[^"']*)["']"#, in: html)
+        where m.count > 1 {
+            guard seen.insert(m[1]).inserted else { continue }
+            byHref.append(absolute(m[1], base: base))
+        }
+        return byText + byHref
+    }
+
+    /// Compact "what's on this page" summary for remote debugging.
+    private static func formMarkers(_ html: String) -> String {
+        var out = ["\(html.count)B"]
+        for key in ["<form", "checkbox", "<select", "<textarea", "DoKogo", "adresat",
+                    "odbiorc", "tresc", "temat", "Brak dostępu"] {
+            if html.range(of: key, options: .caseInsensitive) != nil { out.append(key) }
+        }
+        return out.joined(separator: ",")
     }
 
     @discardableResult
@@ -100,8 +151,8 @@ actor MessagesClient {
         let ids = recipientLoginIds.filter { !$0.isEmpty }
         guard !ids.isEmpty else { throw APIError.messageBridgeFailed("brak odbiorcy") }
 
-        let (formData, formResp) = try await get(Self.composeURL)
-        let formHTML = String(data: formData, encoding: .utf8) ?? ""
+        let form = try await composeForm()
+        let formHTML = form.html
 
         var fields = HTTP.hiddenInputs(in: formHTML)
         fields["temat"] = subject
@@ -117,7 +168,7 @@ actor MessagesClient {
         pairs.append(contentsOf: fields.map { ($0.key, $0.value) })
 
         let action = HTTP.firstMatch(#"<form[^>]*action=["']([^"']*wiadomosci[^"']*)["']"#, in: formHTML)
-            .map { Self.absolute($0, base: formResp?.url) } ?? Self.composeURL
+            .map { Self.absolute($0, base: URL(string: form.url)) } ?? form.url
 
         let (respData, resp) = try await post(action, pairs: pairs)
         let respHTML = String(data: respData, encoding: .utf8) ?? ""
@@ -177,12 +228,18 @@ actor MessagesClient {
         return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    /// Whitespace-collapsed slice of the compose form, for remote debugging.
+    /// Whitespace-collapsed slice around the most informative marker on the page,
+    /// for remote debugging when a form can't be parsed.
     private static func formRegion(_ html: String) -> String {
-        let anchor = html.range(of: "<form")?.lowerBound ?? html.startIndex
-        let end = html.index(anchor, offsetBy: 1200, limitedBy: html.endIndex) ?? html.endIndex
-        return String(html[anchor..<end])
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        var anchor = html.startIndex
+        for marker in ["<form", "DoKogo", "adresat", "odbiorc", "checkbox", "<select", "<textarea"] {
+            if let r = html.range(of: marker, options: .caseInsensitive) { anchor = r.lowerBound; break }
+        }
+        let start = html.index(anchor, offsetBy: -200, limitedBy: html.startIndex) ?? html.startIndex
+        let end = html.index(anchor, offsetBy: 1000, limitedBy: html.endIndex) ?? html.endIndex
+        return formMarkers(html) + " · "
+            + String(html[start..<end])
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
     // MARK: - Deep diagnostic
@@ -207,6 +264,21 @@ actor MessagesClient {
             if let first = parsed.first {
                 lines.append("  1.: id=\(first.id) od='\(first.correspondent)' temat='\(first.subject.prefix(40))' data=\(first.sentDate.map { "\($0)" } ?? "?") nieprzeczyt=\(first.isUnread)")
             }
+        }
+
+        // Compose-form discovery — every /wiadomosci link the inbox offers, so we can
+        // see where Librus actually puts "napisz wiadomość".
+        if let (d, _) = try? await get("https://synergia.librus.pl/wiadomosci") {
+            let h = String(data: d, encoding: .utf8) ?? ""
+            let hrefs = Set(HTTP.allMatches(#"<a[^>]+href=["']([^"']*wiadomosci[^"']*)["']"#, in: h)
+                .compactMap { $0.count > 1 ? $0[1] : nil })
+            lines.append("linki: " + hrefs.sorted().prefix(16).joined(separator: " "))
+        }
+        do {
+            let form = try await composeForm()
+            lines.append("formularz: \(shortPath(form.url)) · odbiorców=\(Self.parseRecipients(form.html).count)")
+        } catch {
+            lines.append("formularz: " + ((error as? LocalizedError)?.errorDescription ?? "\(error)"))
         }
         return lines.joined(separator: "\n")
     }

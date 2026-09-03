@@ -40,6 +40,7 @@ struct MessageComposeView: View {
                         Text(errorText ?? "Nie udało się wczytać listy odbiorców.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                     } else {
                         NavigationLink {
                             RecipientPicker(recipients: recipients, selected: $selected)
@@ -61,7 +62,10 @@ struct MessageComposeView: View {
 
                 if let errorText, !recipients.isEmpty {
                     Section {
-                        Text(errorText).font(.footnote).foregroundStyle(Color.negative)
+                        Text(errorText)
+                            .font(.footnote)
+                            .foregroundStyle(Color.negative)
+                            .textSelection(.enabled)
                     }
                 }
             }
