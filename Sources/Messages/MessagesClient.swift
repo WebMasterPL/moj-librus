@@ -102,15 +102,23 @@ actor MessagesClient {
         }
 
         var tried: [String] = []
+        var richest: (url: String, html: String)?
         for url in candidates.prefix(8) {
             guard let (data, resp) = try? await get(url) else { continue }
             let html = String(data: data, encoding: .utf8) ?? ""
             if !Self.parseRecipients(html).isEmpty { return (html, url) }
             tried.append("\(shortPath(url))[\(resp?.statusCode ?? 0)] \(Self.formMarkers(html))")
+            if html.range(of: "<form", options: .caseInsensitive) != nil,
+               html.count > (richest?.html.count ?? 0) {
+                richest = (url, html)
+            }
         }
-        throw APIError.messageBridgeFailed(
-            "nie znalazłem formularza nowej wiadomości · sprawdzone: "
-                + (tried.isEmpty ? "(żaden adres nie odpowiedział)" : tried.joined(separator: " | ")))
+        var detail = "nie znalazłem odbiorców w formularzu · sprawdzone: "
+            + (tried.isEmpty ? "(żaden adres nie odpowiedział)" : tried.joined(separator: " | "))
+        if let richest {
+            detail += " ·· \(shortPath(richest.url)): " + Self.formDump(richest.html)
+        }
+        throw APIError.messageBridgeFailed(detail)
     }
 
     /// Links on the inbox page that could open the compose view — text-matched
@@ -161,10 +169,21 @@ actor MessagesClient {
             ?? HTTP.firstMatch(#"<input[^>]*name=["']([^"']+)["'][^>]*type=["']submit["']"#, in: formHTML)
         fields[submitName ?? "wyslij"] = "Wyślij"
 
-        // The recipient field repeats once per person, so the body has to be ordered.
+        // Use the recipient field name exactly as the form spells it (it already
+        // carries `[]` when Librus expects repeats).
         let recipientField = Self.parseRecipients(formHTML).first?.group ?? "DoKogo[]"
-        let key = recipientField.hasSuffix("[]") ? recipientField : "\(recipientField)[]"
-        var pairs: [(String, String)] = ids.map { (key, $0) }
+
+        // Preserve any other select's default (e.g. the recipient-type dropdown).
+        for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: formHTML) where sm.count > 2 {
+            guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]),
+                  name != recipientField,
+                  let selected = HTTP.firstMatch(#"<option[^>]*value=["']([^"']*)["'][^>]*selected"#, in: sm[2])
+            else { continue }
+            fields[name] = selected
+        }
+
+        // The recipient field repeats once per person, so the body has to be ordered.
+        var pairs: [(String, String)] = ids.map { (recipientField, $0) }
         pairs.append(contentsOf: fields.map { ($0.key, $0.value) })
 
         let action = HTTP.firstMatch(#"<form[^>]*action=["']([^"']*wiadomosci[^"']*)["']"#, in: formHTML)
@@ -201,8 +220,12 @@ actor MessagesClient {
             return l.contains("kogo") || l.contains("adresat") || l.contains("odbiorc")
                 || l.contains("receiver") || l.contains("nauczyciel")
         }
+        /// A person label looks like "Kowalski Jan" / "Kowalski Jan (Nauczyciel)".
+        func looksLikePerson(_ label: String) -> Bool {
+            label.contains(" ") && label.count >= 5
+        }
 
-        // Checkbox list: <input type="checkbox" name="DoKogo[]" value="123"> Nazwisko Imię (Rola)
+        // Checkbox list: <input type="checkbox" name="DoKogo[]" value="123"> Nazwisko Imię
         for m in HTTP.allMatches(#"<input([^>]*type=["']checkbox["'][^>]*)>([^<]{0,90})"#, in: html)
         where m.count > 2 {
             let tag = m[1]
@@ -213,19 +236,61 @@ actor MessagesClient {
             out.append(Recipient(id: value, name: label, group: name))
         }
 
-        // <select name="DoKogo"><option value="123">Nazwisko Imię</option>
+        // <select>: prefer one whose name mentions recipients; otherwise fall back to
+        // the biggest select whose options look like a list of people.
+        var chosen: (name: String, items: [Recipient])?
         for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: html) where sm.count > 2 {
-            guard let selName = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]),
-                  wanted(selName) else { continue }
+            let selName = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]) ?? ""
+            var items: [Recipient] = []
             for om in HTTP.allMatches(#"<option[^>]*value=["']([^"']+)["'][^>]*>(.*?)</option>"#, in: sm[2])
             where om.count > 2 {
                 let value = om[1]
                 let label = stripHTML(om[2])
-                guard value != "0", !label.isEmpty, seen.insert(value).inserted else { continue }
-                out.append(Recipient(id: value, name: label, group: selName))
+                guard value != "0", !value.isEmpty, !label.isEmpty else { continue }
+                items.append(Recipient(id: value, name: label, group: selName))
+            }
+            guard !items.isEmpty else { continue }
+            if wanted(selName) { chosen = (selName, items); break }
+            let peopleish = items.filter { looksLikePerson($0.name) }
+            if peopleish.count >= 3, peopleish.count > (chosen?.items.count ?? 0) {
+                chosen = (selName, peopleish)
             }
         }
+        if let chosen {
+            for person in chosen.items where seen.insert(person.id).inserted { out.append(person) }
+        }
         return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Structural summary of a form: action, every select with its first options,
+    /// input names/types, textarea names. Compact enough to paste into a report.
+    private static func formDump(_ html: String) -> String {
+        var out: [String] = []
+        if let tag = HTTP.firstMatch(#"<form([^>]*)>"#, in: html) {
+            out.append("form{" + collapse(tag).prefix(120) + "}")
+        }
+        for m in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: html) where m.count > 2 {
+            let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: m[1]) ?? "?"
+            let opts = HTTP.allMatches(#"<option[^>]*value=["']([^"']*)["'][^>]*>(.*?)</option>"#, in: m[2])
+                .compactMap { $0.count > 2 ? "\($0[1])=\(stripHTML($0[2]).prefix(22))" : nil }
+            out.append("select[\(name)]×\(opts.count){" + opts.prefix(3).joined(separator: ";") + "}")
+        }
+        var inputs = Set<String>()
+        for m in HTTP.allMatches(#"<input([^>]*)>"#, in: html) where m.count > 1 {
+            guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: m[1]) else { continue }
+            let type = HTTP.firstMatch(#"type=["']([^"']+)["']"#, in: m[1]) ?? "?"
+            inputs.insert("\(name):\(type)")
+        }
+        out.append("inputs{" + inputs.sorted().prefix(22).joined(separator: " ") + "}")
+        let areas = HTTP.allMatches(#"<textarea([^>]*)>"#, in: html)
+            .compactMap { $0.count > 1 ? HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: $0[1]) : nil }
+        if !areas.isEmpty { out.append("textarea{" + areas.joined(separator: " ") + "}") }
+        return out.joined(separator: " · ")
+    }
+
+    private static func collapse(_ s: String) -> String {
+        s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
     }
 
     /// Whitespace-collapsed slice around the most informative marker on the page,
@@ -276,7 +341,10 @@ actor MessagesClient {
         }
         do {
             let form = try await composeForm()
-            lines.append("formularz: \(shortPath(form.url)) · odbiorców=\(Self.parseRecipients(form.html).count)")
+            let people = Self.parseRecipients(form.html)
+            lines.append("formularz: \(shortPath(form.url)) · odbiorców=\(people.count)"
+                + (people.first.map { " · np. \($0.name) (pole \($0.group ?? "?"))" } ?? ""))
+            lines.append("  " + Self.formDump(form.html))
         } catch {
             lines.append("formularz: " + ((error as? LocalizedError)?.errorDescription ?? "\(error)"))
         }
