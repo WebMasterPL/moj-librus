@@ -6,7 +6,7 @@ struct MessageComposeView: View {
     @Environment(DataRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
 
-    @State private var recipients: [MessagesClient.Recipient] = []
+    @State private var list: MessagesClient.RecipientList?
     @State private var selected: Set<String> = []
     @State private var subject = ""
     @State private var text = ""
@@ -14,6 +14,8 @@ struct MessageComposeView: View {
     @State private var sending = false
     @State private var errorText: String?
     @State private var confirm = false
+
+    private var recipients: [MessagesClient.Recipient] { list?.people ?? [] }
 
     private var selectedNames: String {
         recipients.filter { selected.contains($0.id) }
@@ -43,7 +45,9 @@ struct MessageComposeView: View {
                             .textSelection(.enabled)
                     } else {
                         NavigationLink {
-                            RecipientPicker(recipients: recipients, selected: $selected)
+                            RecipientPicker(recipients: recipients,
+                                            allowsMultiple: list?.allowsMultiple ?? true,
+                                            selected: $selected)
                         } label: {
                             Text(selected.isEmpty ? "Wybierz odbiorców" : selectedNames)
                                 .foregroundStyle(selected.isEmpty ? Color.secondary : Color.primary)
@@ -99,7 +103,7 @@ struct MessageComposeView: View {
     private func loadRecipients() async {
         loading = true
         let result = await repo.loadRecipients()
-        recipients = result.people
+        list = result.list
         errorText = result.error
         loading = false
     }
@@ -124,7 +128,10 @@ struct MessageComposeView: View {
 
 private struct RecipientPicker: View {
     let recipients: [MessagesClient.Recipient]
+    /// Librus renders the recipient control as radio buttons here, so one at a time.
+    let allowsMultiple: Bool
     @Binding var selected: Set<String>
+    @Environment(\.dismiss) private var dismiss
     @State private var search = ""
 
     private var filtered: [MessagesClient.Recipient] {
@@ -136,10 +143,15 @@ private struct RecipientPicker: View {
         List(filtered) { person in
             Button {
                 Haptics.selection()
-                if selected.contains(person.id) {
-                    selected.remove(person.id)
+                if allowsMultiple {
+                    if selected.contains(person.id) {
+                        selected.remove(person.id)
+                    } else {
+                        selected.insert(person.id)
+                    }
                 } else {
-                    selected.insert(person.id)
+                    selected = [person.id]
+                    dismiss()
                 }
             } label: {
                 HStack(spacing: Theme.Space.md) {
@@ -159,7 +171,7 @@ private struct RecipientPicker: View {
         .scrollContentBackground(.hidden)
         .background(Color.appGroupedBackground.ignoresSafeArea())
         .searchable(text: $search, prompt: "Szukaj odbiorcy")
-        .navigationTitle("Odbiorcy (\(selected.count))")
+        .navigationTitle(allowsMultiple ? "Odbiorcy (\(selected.count))" : "Odbiorca")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

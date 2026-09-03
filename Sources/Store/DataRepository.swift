@@ -402,13 +402,13 @@ final class DataRepository {
     }
 
     /// People this account may write to (from the Synergia compose form).
-    /// Returns an empty list plus a message when the form can't be read.
-    func loadRecipients() async -> (people: [MessagesClient.Recipient], error: String?) {
+    /// Returns nil plus a message when the form can't be read.
+    func loadRecipients() async -> (list: MessagesClient.RecipientList?, error: String?) {
         do {
             return (try await messages.recipients(), nil)
         } catch {
             let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            return ([], text)
+            return (nil, text)
         }
     }
 

@@ -82,9 +82,13 @@ actor MessagesClient {
     }
 
     /// People this account may write to, read off the Synergia compose form.
-    func recipients() async throws -> [Recipient] {
+    func recipients() async throws -> RecipientList {
         try await ensureSynergiaSession()
-        return Self.parseRecipients(try await composeForm().html)
+        let form = try await composeForm()
+        guard let list = Self.parseRecipientList(form.html) else {
+            throw APIError.messageBridgeFailed("brak odbiorców · " + Self.formDump(form.html))
+        }
+        return list
     }
 
     /// Locate the "new message" page by following the compose link off the inbox
@@ -106,7 +110,7 @@ actor MessagesClient {
         for url in candidates.prefix(8) {
             guard let (data, resp) = try? await get(url) else { continue }
             let html = String(data: data, encoding: .utf8) ?? ""
-            if !Self.parseRecipients(html).isEmpty { return (html, url) }
+            if Self.parseRecipientList(html) != nil { return (html, url) }
             tried.append("\(shortPath(url))[\(resp?.statusCode ?? 0)] \(Self.formMarkers(html))")
             if html.range(of: "<form", options: .caseInsensitive) != nil,
                html.count > (richest?.html.count ?? 0) {
@@ -171,7 +175,7 @@ actor MessagesClient {
 
         // Use the recipient field name exactly as the form spells it (it already
         // carries `[]` when Librus expects repeats).
-        let recipientField = Self.parseRecipients(formHTML).first?.group ?? "DoKogo[]"
+        let recipientField = Self.parseRecipientList(formHTML)?.field ?? "adresat"
 
         // Preserve any other select's default (e.g. the recipient-type dropdown).
         for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: formHTML) where sm.count > 2 {
@@ -211,55 +215,95 @@ actor MessagesClient {
             .absoluteString ?? composeURL
     }
 
-    private static func parseRecipients(_ html: String) -> [Recipient] {
-        var out: [Recipient] = []
+    /// The recipient control on the Librus compose form. On this school's Synergia
+    /// it's `<input type="radio" name="adresat">` inside a table row (so the label
+    /// lives in the sibling `<td>`s), hence single-selection.
+    struct RecipientList: Sendable {
+        var people: [Recipient]
+        var field: String
+        var allowsMultiple: Bool
+    }
+
+    private static func parseRecipientList(_ html: String) -> RecipientList? {
+        var people: [Recipient] = []
         var seen = Set<String>()
+        var field = ""
+        var multiple = true
 
         func wanted(_ name: String) -> Bool {
             let l = name.lowercased()
             return l.contains("kogo") || l.contains("adresat") || l.contains("odbiorc")
                 || l.contains("receiver") || l.contains("nauczyciel")
         }
-        /// A person label looks like "Kowalski Jan" / "Kowalski Jan (Nauczyciel)".
-        func looksLikePerson(_ label: String) -> Bool {
-            label.contains(" ") && label.count >= 5
-        }
+        func looksLikePerson(_ label: String) -> Bool { label.contains(" ") && label.count >= 5 }
 
-        // Checkbox list: <input type="checkbox" name="DoKogo[]" value="123"> Nazwisko Imię
-        for m in HTTP.allMatches(#"<input([^>]*type=["']checkbox["'][^>]*)>([^<]{0,90})"#, in: html)
-        where m.count > 2 {
-            let tag = m[1]
-            guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: tag), wanted(name),
+        // 1. Table rows holding a radio/checkbox — label comes from the row's cells.
+        for m in HTTP.allMatches(#"<tr[^>]*>(.*?)</tr>"#, in: html) where m.count > 1 {
+            let row = m[1]
+            guard let tag = HTTP.firstMatch(#"(<input[^>]*type=["'](?:radio|checkbox)["'][^>]*>)"#, in: row),
+                  let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: tag), wanted(name),
                   let value = HTTP.firstMatch(#"value=["']([^"']+)["']"#, in: tag),
-                  value != "0", seen.insert(value).inserted else { continue }
-            let label = stripHTML(m[2]).nonEmpty ?? value
-            out.append(Recipient(id: value, name: label, group: name))
+                  !value.isEmpty, value != "0", seen.insert(value).inserted else { continue }
+            let cells = HTTP.allMatches(#"<td[^>]*>(.*?)</td>"#, in: row)
+                .compactMap { $0.count > 1 ? stripHTML($0[1]) : nil }
+                .filter { !$0.isEmpty }
+            field = name
+            multiple = tag.range(of: #"type=["']radio["']"#,
+                                 options: [.regularExpression, .caseInsensitive]) == nil
+            people.append(Recipient(id: value,
+                                    name: cells.joined(separator: " · ").nonEmpty ?? value,
+                                    group: name))
         }
 
-        // <select>: prefer one whose name mentions recipients; otherwise fall back to
-        // the biggest select whose options look like a list of people.
-        var chosen: (name: String, items: [Recipient])?
-        for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: html) where sm.count > 2 {
-            let selName = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]) ?? ""
-            var items: [Recipient] = []
-            for om in HTTP.allMatches(#"<option[^>]*value=["']([^"']+)["'][^>]*>(.*?)</option>"#, in: sm[2])
-            where om.count > 2 {
-                let value = om[1]
-                let label = stripHTML(om[2])
-                guard value != "0", !value.isEmpty, !label.isEmpty else { continue }
-                items.append(Recipient(id: value, name: label, group: selName))
-            }
-            guard !items.isEmpty else { continue }
-            if wanted(selName) { chosen = (selName, items); break }
-            let peopleish = items.filter { looksLikePerson($0.name) }
-            if peopleish.count >= 3, peopleish.count > (chosen?.items.count ?? 0) {
-                chosen = (selName, peopleish)
+        // 2. Flat "input then label text" layout.
+        if people.isEmpty {
+            for m in HTTP.allMatches(#"<input([^>]*type=["'](?:radio|checkbox)["'][^>]*)>([^<]{0,90})"#, in: html)
+            where m.count > 2 {
+                let tag = m[1]
+                guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: tag), wanted(name),
+                      let value = HTTP.firstMatch(#"value=["']([^"']+)["']"#, in: tag),
+                      !value.isEmpty, value != "0", seen.insert(value).inserted else { continue }
+                field = name
+                multiple = tag.range(of: #"type=["']radio["']"#,
+                                     options: [.regularExpression, .caseInsensitive]) == nil
+                people.append(Recipient(id: value, name: stripHTML(m[2]).nonEmpty ?? value, group: name))
             }
         }
-        if let chosen {
-            for person in chosen.items where seen.insert(person.id).inserted { out.append(person) }
+
+        // 3. A <select> of people.
+        if people.isEmpty {
+            var chosen: (name: String, items: [Recipient], multi: Bool)?
+            for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: html) where sm.count > 2 {
+                let selName = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]) ?? ""
+                let isMulti = sm[1].range(of: "multiple", options: .caseInsensitive) != nil
+                var items: [Recipient] = []
+                for om in HTTP.allMatches(#"<option[^>]*value=["']([^"']+)["'][^>]*>(.*?)</option>"#, in: sm[2])
+                where om.count > 2 {
+                    let value = om[1]
+                    let label = stripHTML(om[2])
+                    guard value != "0", !value.isEmpty, !label.isEmpty else { continue }
+                    items.append(Recipient(id: value, name: label, group: selName))
+                }
+                guard !items.isEmpty else { continue }
+                if wanted(selName) { chosen = (selName, items, isMulti); break }
+                let peopleish = items.filter { looksLikePerson($0.name) }
+                if peopleish.count >= 3, peopleish.count > (chosen?.items.count ?? 0) {
+                    chosen = (selName, peopleish, isMulti)
+                }
+            }
+            if let chosen {
+                field = chosen.name
+                multiple = chosen.multi
+                people = chosen.items
+            }
         }
-        return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        guard !people.isEmpty else { return nil }
+        return RecipientList(
+            people: people.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
+            field: field.isEmpty ? "adresat" : field,
+            allowsMultiple: multiple
+        )
     }
 
     /// Structural summary of a form: action, every select with its first options,
@@ -341,9 +385,11 @@ actor MessagesClient {
         }
         do {
             let form = try await composeForm()
-            let people = Self.parseRecipients(form.html)
-            lines.append("formularz: \(shortPath(form.url)) · odbiorców=\(people.count)"
-                + (people.first.map { " · np. \($0.name) (pole \($0.group ?? "?"))" } ?? ""))
+            let list = Self.parseRecipientList(form.html)
+            lines.append("formularz: \(shortPath(form.url)) · pole=\(list?.field ?? "?")"
+                + " wielu=\(list?.allowsMultiple.description ?? "?")"
+                + " odbiorców=\(list?.people.count ?? 0)"
+                + (list?.people.first.map { " · np. \($0.name.prefix(40))" } ?? ""))
             lines.append("  " + Self.formDump(form.html))
         } catch {
             lines.append("formularz: " + ((error as? LocalizedError)?.errorDescription ?? "\(error)"))
