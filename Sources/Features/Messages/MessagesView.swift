@@ -4,27 +4,44 @@ struct MessagesView: View {
     @Environment(DataRepository.self) private var repo
     @State private var didLoad = false
     @State private var showCompose = false
+    @State private var folder: MessagesClient.Folder = .received
+
+    private var items: [MessageItem] {
+        folder == .received ? repo.messagesInbox : repo.messagesSent
+    }
 
     var body: some View {
         List {
+            Section {
+                Picker("Folder", selection: $folder) {
+                    Text("Odebrane").tag(MessagesClient.Folder.received)
+                    Text("Wysłane").tag(MessagesClient.Folder.sent)
+                }
+                .pickerStyle(.segmented)
+                .listRowInsets(EdgeInsets(top: Theme.Space.xs, leading: 0,
+                                          bottom: Theme.Space.sm, trailing: 0))
+                .listRowBackground(Color.clear)
+            }
+
             if let error = repo.messagesError {
                 Section {
                     ErrorBanner(message: error) { Task { await repo.loadMessages() } }
-                    Text("Skrzynka wiadomości korzysta z osobnego, mniej stabilnego kanału Librusa. Reszta aplikacji działa niezależnie.")
+                    Text("Skrzynka wiadomości czytana jest ze strony Synergii — Librus czasem zmienia jej układ.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            if repo.messagesInbox.isEmpty && repo.messagesError == nil {
-                EmptyStateView(systemImage: "envelope", title: "Brak wiadomości",
+            if items.isEmpty && repo.messagesError == nil {
+                EmptyStateView(systemImage: "envelope",
+                               title: folder == .received ? "Brak wiadomości" : "Brak wysłanych",
                                message: didLoad ? nil : "Wczytywanie…")
             }
 
-            ForEach(repo.messagesInbox) { message in
-                let unread = !repo.isMessageRead(message)
+            ForEach(items) { message in
+                let unread = folder == .received && !repo.isMessageRead(message)
                 NavigationLink {
-                    MessageDetailView(message: message)
+                    MessageDetailView(message: message, folder: folder)
                 } label: {
                     HStack(alignment: .top, spacing: Theme.Space.md) {
                         Circle()
@@ -53,17 +70,20 @@ struct MessagesView: View {
                     .padding(.vertical, 2)
                 }
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                    Button {
-                        Haptics.soft()
-                        repo.setMessageRead(message, read: unread)
-                    } label: {
-                        Label(unread ? "Przeczytane" : "Nieprzeczytane",
-                              systemImage: unread ? "envelope.open" : "envelope.badge")
+                    if folder == .received {
+                        Button {
+                            Haptics.soft()
+                            repo.setMessageRead(message, read: unread)
+                        } label: {
+                            Label(unread ? "Przeczytane" : "Nieprzeczytane",
+                                  systemImage: unread ? "envelope.open" : "envelope.badge")
+                        }
+                        .tint(unread ? .accentColor : .gray)
                     }
-                    .tint(unread ? .accentColor : .gray)
                 }
             }
         }
+        .animation(Theme.Motion.quick, value: folder)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(Color.appGroupedBackground.ignoresSafeArea())
@@ -95,9 +115,11 @@ struct MessagesView: View {
 struct MessageDetailView: View {
     @Environment(DataRepository.self) private var repo
     let message: MessageItem
+    var folder: MessagesClient.Folder = .received
 
     @State private var text: String?
     @State private var senderLoginId: String?
+    @State private var receipts: [MessagesClient.MessageContent.Receipt] = []
     @State private var loading = true
     @State private var showReply = false
 
@@ -107,7 +129,8 @@ struct MessageDetailView: View {
                 Text(message.subject.isEmpty ? "(bez tematu)" : message.subject)
                     .font(.title2.weight(.bold))
                 HStack(spacing: Theme.Space.md) {
-                    Label(message.correspondent, systemImage: "person.fill")
+                    Label(message.correspondent,
+                          systemImage: folder == .sent ? "paperplane.fill" : "person.fill")
                     if let date = message.sentDate { Label(date.dayMonthYear, systemImage: "calendar") }
                 }
                 .font(.caption)
@@ -123,15 +146,35 @@ struct MessageDetailView: View {
                     Text("Nie udało się wczytać treści wiadomości.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
+
+                if !receipts.isEmpty {
+                    SectionCard("Odczytanie", systemImage: "checkmark.circle") {
+                        VStack(spacing: Theme.Space.sm) {
+                            ForEach(receipts) { receipt in
+                                HStack(spacing: Theme.Space.sm) {
+                                    Image(systemName: receipt.readAt == nil ? "circle" : "checkmark.circle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(receipt.readAt == nil ? Color.secondary : Color.positive)
+                                    Text(receipt.name).font(.callout).lineLimit(1)
+                                    Spacer(minLength: Theme.Space.sm)
+                                    Text(receipt.readAt ?? "nieodczytane")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, Theme.Space.sm)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Theme.Space.lg)
         }
         .screenBackground()
-        .navigationTitle("Wiadomość")
+        .navigationTitle(folder == .sent ? "Wysłana" : "Wiadomość")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let senderLoginId, !senderLoginId.isEmpty {
+            if folder == .received, let senderLoginId, !senderLoginId.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showReply = true
@@ -152,9 +195,10 @@ struct MessageDetailView: View {
             }
         }
         .task {
-            let content = await repo.loadMessageContent(message.id)
+            let content = await repo.loadMessageContent(message.id, folder: folder)
             text = content?.text
             senderLoginId = content?.senderLoginId
+            receipts = content?.receipts ?? []
             loading = false
         }
     }

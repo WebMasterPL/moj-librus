@@ -33,9 +33,17 @@ actor MessagesClient {
 
     // MARK: - Public API
 
-    func inbox() async throws -> [MessageItem] {
+    /// Librus folder ids: 5 = odebrane, 6 = wysłane.
+    enum Folder: Int, Sendable {
+        case received = 5
+        case sent = 6
+    }
+
+    func inbox() async throws -> [MessageItem] { try await messages(in: .received) }
+
+    func messages(in folder: Folder) async throws -> [MessageItem] {
         try await ensureSynergiaSession()
-        let (data, resp) = try await get("https://synergia.librus.pl/wiadomosci")
+        let (data, resp) = try await get("https://synergia.librus.pl/wiadomosci/\(folder.rawValue)")
         let html = String(data: data, encoding: .utf8) ?? ""
         let finalURL = resp?.url?.absoluteString ?? ""
 
@@ -57,11 +65,21 @@ actor MessagesClient {
     struct MessageContent: Sendable {
         var text: String
         var senderLoginId: String?
+        /// Sent messages: who received it and when they read it.
+        var receipts: [Receipt] = []
+
+        struct Receipt: Identifiable, Hashable, Sendable {
+            var id: String { name }
+            let name: String
+            /// nil = still unread.
+            let readAt: String?
+        }
     }
 
-    func content(messageId: Int) async throws -> MessageContent {
+    func content(messageId: Int, folder: Folder = .received) async throws -> MessageContent {
         try await ensureSynergiaSession()
-        let (data, _) = try await get("https://synergia.librus.pl/wiadomosci/1/5/\(messageId)/f0")
+        let (data, _) = try await get(
+            "https://synergia.librus.pl/wiadomosci/1/\(folder.rawValue)/\(messageId)/f0")
         let html = String(data: data, encoding: .utf8) ?? ""
 
         // szkolny reads `.container-message-content` — grab it with nesting honoured.
@@ -70,7 +88,28 @@ actor MessagesClient {
             ?? Self.tableRegion(html)
 
         let senderId = HTTP.firstMatch(#"/wiadomosci/2/6/(\d+)"#, in: html)
-        return MessageContent(text: cleanup(bodyHTML), senderLoginId: senderId)
+        return MessageContent(text: cleanup(bodyHTML),
+                              senderLoginId: senderId,
+                              receipts: folder == .sent ? Self.parseReceipts(html) : [])
+    }
+
+    /// Sent-message read table: rows of `odbiorca | data odczytania` where "NIE"
+    /// means not read yet.
+    private static func parseReceipts(_ html: String) -> [MessageContent.Receipt] {
+        var out: [MessageContent.Receipt] = []
+        for m in HTTP.allMatches(#"<tr[^>]*>(.*?)</tr>"#, in: html) where m.count > 1 {
+            let cells = HTTP.allMatches(#"<td[^>]*>(.*?)</td>"#, in: m[1])
+                .compactMap { $0.count > 1 ? stripHTML($0[1]) : nil }
+            guard cells.count >= 2 else { continue }
+            let name = cells[0]
+            let status = cells[1]
+            guard name.contains(" "), name.count > 4 else { continue }
+            let isDate = status.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression) != nil
+            let notRead = status.uppercased() == "NIE"
+            guard isDate || notRead else { continue }
+            out.append(.init(name: name, readAt: isDate ? status : nil))
+        }
+        return out
     }
 
     // MARK: - Composing
@@ -81,14 +120,75 @@ actor MessagesClient {
         let group: String?
     }
 
-    /// People this account may write to, read off the Synergia compose form.
-    func recipients() async throws -> RecipientList {
+    /// Step 1 — the recipient *categories* Librus offers (Nauczyciele, Pedagog…).
+    /// On the Synergia form these are the `adresat` radios.
+    func recipientCategories() async throws -> RecipientList {
         try await ensureSynergiaSession()
         let form = try await composeForm()
         guard let list = Self.parseRecipientList(form.html) else {
-            throw APIError.messageBridgeFailed("brak odbiorców · " + Self.formDump(form.html))
+            throw APIError.messageBridgeFailed("brak kategorii odbiorców · " + Self.formDump(form.html))
         }
         return list
+    }
+
+    /// Step 2 — the people inside a category. Librus expands the list once the
+    /// category radio is picked, so replay that as a form POST (then a couple of
+    /// GET shapes) and parse whichever comes back with a person list.
+    func recipients(inCategory categoryID: String) async throws -> RecipientList {
+        try await ensureSynergiaSession()
+        let form = try await composeForm()
+        let categoryField = Self.parseRecipientList(form.html)?.field ?? "adresat"
+
+        var fields = HTTP.hiddenInputs(in: form.html)
+        fields[categoryField] = categoryID
+        var attempts: [String] = []
+
+        if let (data, _) = try? await post("https://synergia.librus.pl/wiadomosci",
+                                           pairs: fields.map { ($0.key, $0.value) }) {
+            let html = String(data: data, encoding: .utf8) ?? ""
+            if let list = Self.parsePeople(html, excluding: categoryField) { return list }
+            attempts.append("POST /wiadomosci → " + Self.formDump(html))
+        }
+        for url in ["https://synergia.librus.pl/wiadomosci/2/5?\(categoryField)=\(categoryID)",
+                    "https://synergia.librus.pl/wiadomosci/uzytkownicy/\(categoryID)"] {
+            guard let (data, resp) = try? await get(url) else { continue }
+            let html = String(data: data, encoding: .utf8) ?? ""
+            if let list = Self.parsePeople(html, excluding: categoryField) { return list }
+            attempts.append("\(shortPath(url))[\(resp?.statusCode ?? 0)] " + Self.formMarkers(html))
+        }
+        throw APIError.messageBridgeFailed(
+            "nie udało się rozwinąć listy osób · " + attempts.joined(separator: " ·· "))
+    }
+
+    /// Recipient inputs that are *not* the category control — i.e. the actual people.
+    private static func parsePeople(_ html: String, excluding categoryField: String) -> RecipientList? {
+        var byField: [String: [Recipient]] = [:]
+        var multipleByField: [String: Bool] = [:]
+
+        for m in HTTP.allMatches(#"<tr[^>]*>(.*?)</tr>"#, in: html) where m.count > 1 {
+            let row = m[1]
+            guard let tag = HTTP.firstMatch(#"(<input[^>]*type=["'](?:radio|checkbox)["'][^>]*>)"#, in: row),
+                  let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: tag),
+                  name != categoryField,
+                  let value = HTTP.firstMatch(#"value=["']([^"']+)["']"#, in: tag),
+                  !value.isEmpty, value != "0" else { continue }
+            let cells = HTTP.allMatches(#"<td[^>]*>(.*?)</td>"#, in: row)
+                .compactMap { $0.count > 1 ? stripHTML($0[1]) : nil }
+                .filter { !$0.isEmpty }
+            let label = cells.joined(separator: " · ")
+            guard label.contains(" "), label.count >= 5 else { continue }
+            byField[name, default: []].append(Recipient(id: value, name: label, group: name))
+            multipleByField[name] = tag.range(of: #"type=["']checkbox["']"#,
+                                              options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        guard let best = byField.max(by: { $0.value.count < $1.value.count }), !best.value.isEmpty else {
+            return nil
+        }
+        return RecipientList(
+            people: best.value.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
+            field: best.key,
+            allowsMultiple: multipleByField[best.key] ?? true
+        )
     }
 
     /// Locate the "new message" page by following the compose link off the inbox
@@ -158,7 +258,9 @@ actor MessagesClient {
     }
 
     @discardableResult
-    func send(recipientLoginIds: [String], subject: String, body: String) async throws -> Int {
+    func send(recipientLoginIds: [String], subject: String, body: String,
+              recipientField: String? = nil,
+              category: (field: String, id: String)? = nil) async throws -> Int {
         try await ensureSynergiaSession()
         let ids = recipientLoginIds.filter { !$0.isEmpty }
         guard !ids.isEmpty else { throw APIError.messageBridgeFailed("brak odbiorcy") }
@@ -169,25 +271,26 @@ actor MessagesClient {
         var fields = HTTP.hiddenInputs(in: formHTML)
         fields["temat"] = subject
         fields["tresc"] = body
+        if let category { fields[category.field] = category.id }
         let submitName = HTTP.firstMatch(#"<input[^>]*type=["']submit["'][^>]*name=["']([^"']+)["']"#, in: formHTML)
             ?? HTTP.firstMatch(#"<input[^>]*name=["']([^"']+)["'][^>]*type=["']submit["']"#, in: formHTML)
         fields[submitName ?? "wyslij"] = "Wyślij"
 
         // Use the recipient field name exactly as the form spells it (it already
         // carries `[]` when Librus expects repeats).
-        let recipientField = Self.parseRecipientList(formHTML)?.field ?? "adresat"
+        let field = recipientField ?? Self.parseRecipientList(formHTML)?.field ?? "adresat"
 
         // Preserve any other select's default (e.g. the recipient-type dropdown).
         for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: formHTML) where sm.count > 2 {
             guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]),
-                  name != recipientField,
+                  name != field,
                   let selected = HTTP.firstMatch(#"<option[^>]*value=["']([^"']*)["'][^>]*selected"#, in: sm[2])
             else { continue }
             fields[name] = selected
         }
 
         // The recipient field repeats once per person, so the body has to be ordered.
-        var pairs: [(String, String)] = ids.map { (recipientField, $0) }
+        var pairs: [(String, String)] = ids.map { (field, $0) }
         pairs.append(contentsOf: fields.map { ($0.key, $0.value) })
 
         let action = HTTP.firstMatch(#"<form[^>]*action=["']([^"']*wiadomosci[^"']*)["']"#, in: formHTML)

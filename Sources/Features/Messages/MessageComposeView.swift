@@ -1,13 +1,19 @@
 import SwiftUI
 
-/// Compose a new Synergia message: pick recipients off the Librus compose form,
-/// then POST it back. Sending is confirmed explicitly before it leaves the device.
+/// Compose a new Synergia message. Librus picks recipients in two steps —
+/// first a category (Nauczyciele, Pedagog…), then the people inside it — so the
+/// picker mirrors that. Sending is confirmed explicitly before it leaves the device.
 struct MessageComposeView: View {
     @Environment(DataRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
 
-    @State private var list: MessagesClient.RecipientList?
+    @State private var categories: MessagesClient.RecipientList?
+    @State private var chosenCategory: MessagesClient.Recipient?
+    @State private var people: [MessagesClient.Recipient] = []
+    @State private var peopleField: String?
+    @State private var peopleAllowMultiple = true
     @State private var selected: Set<String> = []
+
     @State private var subject = ""
     @State private var text = ""
     @State private var loading = true
@@ -15,12 +21,8 @@ struct MessageComposeView: View {
     @State private var errorText: String?
     @State private var confirm = false
 
-    private var recipients: [MessagesClient.Recipient] { list?.people ?? [] }
-
     private var selectedNames: String {
-        recipients.filter { selected.contains($0.id) }
-            .map(\.name)
-            .joined(separator: ", ")
+        people.filter { selected.contains($0.id) }.map(\.name).joined(separator: ", ")
     }
 
     private var canSend: Bool {
@@ -38,21 +40,34 @@ struct MessageComposeView: View {
                             ProgressView()
                             Text("Wczytywanie odbiorców…").foregroundStyle(.secondary)
                         }
-                    } else if recipients.isEmpty {
-                        Text(errorText ?? "Nie udało się wczytać listy odbiorców.")
+                    } else if let categories, !categories.people.isEmpty {
+                        NavigationLink {
+                            CategoryPicker(
+                                categories: categories.people,
+                                chosenCategory: $chosenCategory,
+                                people: $people,
+                                peopleField: $peopleField,
+                                peopleAllowMultiple: $peopleAllowMultiple,
+                                selected: $selected
+                            )
+                            .environment(repo)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(selected.isEmpty ? "Wybierz odbiorcę" : selectedNames)
+                                    .foregroundStyle(selected.isEmpty ? Color.secondary : Color.primary)
+                                    .lineLimit(2)
+                                if let chosenCategory, !selected.isEmpty {
+                                    Text(chosenCategory.name)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } else {
+                        Text(errorText ?? "Nie udało się wczytać odbiorców.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
-                    } else {
-                        NavigationLink {
-                            RecipientPicker(recipients: recipients,
-                                            allowsMultiple: list?.allowsMultiple ?? true,
-                                            selected: $selected)
-                        } label: {
-                            Text(selected.isEmpty ? "Wybierz odbiorców" : selectedNames)
-                                .foregroundStyle(selected.isEmpty ? Color.secondary : Color.primary)
-                                .lineLimit(2)
-                        }
                     }
                 }
 
@@ -64,7 +79,7 @@ struct MessageComposeView: View {
                     TextEditor(text: $text).frame(minHeight: 180)
                 }
 
-                if let errorText, !recipients.isEmpty {
+                if let errorText, categories != nil {
                     Section {
                         Text(errorText)
                             .font(.footnote)
@@ -96,14 +111,14 @@ struct MessageComposeView: View {
             } message: {
                 Text("Do: \(selectedNames)\nTemat: \(subject.isEmpty ? "(bez tematu)" : subject)")
             }
-            .task { await loadRecipients() }
+            .task { await loadCategories() }
         }
     }
 
-    private func loadRecipients() async {
+    private func loadCategories() async {
         loading = true
-        let result = await repo.loadRecipients()
-        list = result.list
+        let result = await repo.loadRecipientCategories()
+        categories = result.list
         errorText = result.error
         loading = false
     }
@@ -112,8 +127,12 @@ struct MessageComposeView: View {
         sending = true
         errorText = nil
         Task {
+            let category = chosenCategory.map {
+                (field: categories?.field ?? "adresat", id: $0.id)
+            }
             let failure = await repo.sendMessage(
-                to: Array(selected), subject: subject, body: text)
+                to: Array(selected), subject: subject, body: text,
+                field: peopleField, category: category)
             sending = false
             if let failure {
                 errorText = failure
@@ -126,52 +145,125 @@ struct MessageComposeView: View {
     }
 }
 
-private struct RecipientPicker: View {
-    let recipients: [MessagesClient.Recipient]
-    /// Librus renders the recipient control as radio buttons here, so one at a time.
-    let allowsMultiple: Bool
-    @Binding var selected: Set<String>
-    @Environment(\.dismiss) private var dismiss
-    @State private var search = ""
+// MARK: - Step 1: category
 
-    private var filtered: [MessagesClient.Recipient] {
-        guard !search.isEmpty else { return recipients }
-        return recipients.filter { $0.name.localizedCaseInsensitiveContains(search) }
-    }
+private struct CategoryPicker: View {
+    @Environment(DataRepository.self) private var repo
+    let categories: [MessagesClient.Recipient]
+    @Binding var chosenCategory: MessagesClient.Recipient?
+    @Binding var people: [MessagesClient.Recipient]
+    @Binding var peopleField: String?
+    @Binding var peopleAllowMultiple: Bool
+    @Binding var selected: Set<String>
 
     var body: some View {
-        List(filtered) { person in
-            Button {
-                Haptics.selection()
-                if allowsMultiple {
-                    if selected.contains(person.id) {
-                        selected.remove(person.id)
-                    } else {
-                        selected.insert(person.id)
-                    }
-                } else {
-                    selected = [person.id]
-                    dismiss()
-                }
+        List(categories) { category in
+            NavigationLink {
+                PeoplePicker(
+                    category: category,
+                    chosenCategory: $chosenCategory,
+                    people: $people,
+                    peopleField: $peopleField,
+                    allowsMultiple: $peopleAllowMultiple,
+                    selected: $selected
+                )
+                .environment(repo)
             } label: {
-                HStack(spacing: Theme.Space.md) {
-                    Text(person.name)
-                        .foregroundStyle(Color.primary)
-                        .lineLimit(2)
-                    Spacer(minLength: Theme.Space.sm)
-                    if selected.contains(person.id) {
-                        Image(systemName: "checkmark")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.tint)
-                    }
-                }
+                Text(category.name).lineLimit(2)
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(Color.appGroupedBackground.ignoresSafeArea())
-        .searchable(text: $search, prompt: "Szukaj odbiorcy")
-        .navigationTitle(allowsMultiple ? "Odbiorcy (\(selected.count))" : "Odbiorca")
+        .navigationTitle("Kategoria odbiorcy")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Step 2: people in that category
+
+private struct PeoplePicker: View {
+    @Environment(DataRepository.self) private var repo
+    @Environment(\.dismiss) private var dismiss
+
+    let category: MessagesClient.Recipient
+    @Binding var chosenCategory: MessagesClient.Recipient?
+    @Binding var people: [MessagesClient.Recipient]
+    @Binding var peopleField: String?
+    @Binding var allowsMultiple: Bool
+    @Binding var selected: Set<String>
+
+    @State private var loading = true
+    @State private var errorText: String?
+    @State private var search = ""
+
+    private var filtered: [MessagesClient.Recipient] {
+        guard !search.isEmpty else { return people }
+        return people.filter { $0.name.localizedCaseInsensitiveContains(search) }
+    }
+
+    var body: some View {
+        Group {
+            if loading {
+                ProgressView("Wczytywanie osób…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if people.isEmpty {
+                ScrollView {
+                    Text(errorText ?? "Brak osób w tej kategorii.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(Theme.Space.lg)
+                }
+            } else {
+                List(filtered) { person in
+                    Button {
+                        Haptics.selection()
+                        if allowsMultiple {
+                            if selected.contains(person.id) {
+                                selected.remove(person.id)
+                            } else {
+                                selected.insert(person.id)
+                            }
+                        } else {
+                            selected = [person.id]
+                            dismiss()
+                        }
+                    } label: {
+                        HStack(spacing: Theme.Space.md) {
+                            Text(person.name)
+                                .foregroundStyle(Color.primary)
+                                .lineLimit(2)
+                            Spacer(minLength: Theme.Space.sm)
+                            if selected.contains(person.id) {
+                                Image(systemName: "checkmark")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
+                .searchable(text: $search, prompt: "Szukaj osoby")
+            }
+        }
+        .background(Color.appGroupedBackground.ignoresSafeArea())
+        .navigationTitle(category.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        chosenCategory = category
+        selected = []
+        loading = true
+        let result = await repo.loadRecipients(inCategory: category.id)
+        people = result.list?.people ?? []
+        peopleField = result.list?.field
+        allowsMultiple = result.list?.allowsMultiple ?? true
+        errorText = result.error
+        loading = false
     }
 }

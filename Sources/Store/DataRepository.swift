@@ -21,6 +21,7 @@ final class DataRepository {
     var events: [CalendarEvent] = []
     var notes: [NoteItem] = []
     var messagesInbox: [MessageItem] = []
+    var messagesSent: [MessageItem] = []
     var bellSchedule: [BellPeriod] = []
     var schoolName: String?
 
@@ -96,6 +97,7 @@ final class DataRepository {
         var events: [CalendarEvent]?
         var notes: [NoteItem]
         var messagesInbox: [MessageItem]
+        var messagesSent: [MessageItem]?
         var bellSchedule: [BellPeriod]?
         var schoolName: String?
         var lastSync: Date?
@@ -115,6 +117,7 @@ final class DataRepository {
         events = s.events ?? []
         notes = s.notes
         messagesInbox = s.messagesInbox
+        messagesSent = s.messagesSent ?? []
         bellSchedule = s.bellSchedule ?? []
         schoolName = s.schoolName
         lastSync = s.lastSync
@@ -132,6 +135,7 @@ final class DataRepository {
             subjectGrades: subjectGrades, attendanceSummary: attendanceSummary,
             attendanceItems: attendanceItems, announcements: announcements,
             events: events, notes: notes, messagesInbox: messagesInbox,
+            messagesSent: messagesSent,
             bellSchedule: bellSchedule, schoolName: schoolName,
             lastSync: lastSync, readAnnouncementIDs: Array(readAnnouncementIDs),
             readMessageIDs: Array(readMessageIDs),
@@ -145,7 +149,7 @@ final class DataRepository {
         Cache.clearAll()
         studentName = ""; schoolYear = .init(); subjectGrades = []
         attendanceSummary = .init(); attendanceItems = []
-        announcements = []; events = []; notes = []; messagesInbox = []
+        announcements = []; events = []; notes = []; messagesInbox = []; messagesSent = []
         bellSchedule = []; schoolName = nil
         SeenGrades.reset()
         Seen.timetableChanges.reset()
@@ -363,7 +367,7 @@ final class DataRepository {
     func loadMessages() async {
         messagesError = nil
         do {
-            let list = try await messages.inbox()
+            let list = try await messages.messages(in: .received)
             messagesInbox = list.sorted { ($0.sentDate ?? .distantPast) > ($1.sentDate ?? .distantPast) }
             if !Seen.messageIDs.hasBaseline {
                 Seen.messageIDs.establishBaseline(Set(list.map(\.id)))
@@ -372,12 +376,21 @@ final class DataRepository {
         } catch {
             handle(error, into: \.messagesError)
         }
+        // Sent messages are a bonus — never let them break the inbox.
+        if let sent = try? await messages.messages(in: .sent) {
+            messagesSent = sent.sorted { ($0.sentDate ?? .distantPast) > ($1.sentDate ?? .distantPast) }
+            saveCache()
+        }
     }
 
-    func loadMessageContent(_ id: Int) async -> MessagesClient.MessageContent? {
+    func loadMessageContent(_ id: Int, folder: MessagesClient.Folder = .received)
+        async -> MessagesClient.MessageContent? {
         do {
-            let content = try await messages.content(messageId: id)
-            if !readMessageIDs.contains(id) { readMessageIDs.insert(id); saveCache() }
+            let content = try await messages.content(messageId: id, folder: folder)
+            if folder == .received, !readMessageIDs.contains(id) {
+                readMessageIDs.insert(id)
+                saveCache()
+            }
             return content
         } catch {
             handle(error, into: \.messagesError)
@@ -391,9 +404,12 @@ final class DataRepository {
     }
 
     /// Sends a new message. Returns nil on success, or an error message to show.
-    func sendMessage(to recipientIDs: [String], subject: String, body: String) async -> String? {
+    func sendMessage(to recipientIDs: [String], subject: String, body: String,
+                     field: String? = nil,
+                     category: (field: String, id: String)? = nil) async -> String? {
         do {
-            try await messages.send(recipientLoginIds: recipientIDs, subject: subject, body: body)
+            try await messages.send(recipientLoginIds: recipientIDs, subject: subject, body: body,
+                                    recipientField: field, category: category)
             await loadMessages()
             return nil
         } catch {
@@ -401,14 +417,22 @@ final class DataRepository {
         }
     }
 
-    /// People this account may write to (from the Synergia compose form).
-    /// Returns nil plus a message when the form can't be read.
-    func loadRecipients() async -> (list: MessagesClient.RecipientList?, error: String?) {
+    /// Step 1 of composing: recipient categories (Nauczyciele, Pedagog…).
+    func loadRecipientCategories() async -> (list: MessagesClient.RecipientList?, error: String?) {
         do {
-            return (try await messages.recipients(), nil)
+            return (try await messages.recipientCategories(), nil)
         } catch {
-            let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            return (nil, text)
+            return (nil, (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    /// Step 2: the people inside a category.
+    func loadRecipients(inCategory categoryID: String)
+        async -> (list: MessagesClient.RecipientList?, error: String?) {
+        do {
+            return (try await messages.recipients(inCategory: categoryID), nil)
+        } catch {
+            return (nil, (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
 
