@@ -113,6 +113,12 @@ actor MessagesClient {
     }
 
     // MARK: - Composing
+    //
+    // Verified against a saved DOM + network capture (2026-09-03):
+    //   1. GET  /wiadomosci/2/5  -> compose form, `requestkey` CSRF, `adresat` radios
+    //   2. POST /getRecipients   -> HTML fragment of `DoKogo[]` checkboxes for a category
+    //   3. POST <form action>    -> requestkey + carried hidden fields + adresat +
+    //                               DoKogo[] / DoKogo_hid[] + temat + tresc + wyslij
 
     struct Recipient: Identifiable, Hashable, Sendable {
         let id: String
@@ -120,143 +126,163 @@ actor MessagesClient {
         let group: String?
     }
 
-    /// Step 1 — the recipient *categories* Librus offers (Nauczyciele, Pedagog…).
-    /// On the Synergia form these are the `adresat` radios.
-    func recipientCategories() async throws -> RecipientList {
+    struct RecipientList: Sendable {
+        var people: [Recipient]
+        var field: String
+        var allowsMultiple: Bool
+    }
+
+    struct RecipientCategory: Identifiable, Hashable, Sendable {
+        let id: String
+        let name: String
+        let classID: String?
+    }
+
+    // Regexes kept as named constants so the parsing code stays readable.
+    private static let REGEX_HIDDEN_INPUT = #"<input([^>]*type=["']?[Hh][Ii][Dd][Dd][Ee][Nn]["']?[^>]*)>"#
+    private static let REGEX_NAME_ATTR = #"name=["']([^"']+)["']"#
+    private static let REGEX_VALUE_ATTR = #"value=["']([^"']*)["']"#
+    private static let REGEX_TYPE_ATTR = #"type=["']([^"']+)["']"#
+    private static let REGEX_CSRF_JS = #"csrfTokenValue\s*=\s*["']([^"']+)["']"#
+    private static let REGEX_FORM_ACTION_NAMED = #"<form[^>]*\bname=["']formWiadomosci["'][^>]*\baction=["']([^"']+)["']"#
+    private static let REGEX_FORM_ACTION_ANY = #"<form[^>]*\baction=["']([^"']*wiadomosci[^"']*)["']"#
+    private static let REGEX_FORM_OPEN = #"<form([^>]*)>"#
+    private static let REGEX_INPUT_OPEN = #"<input([^>]*)>"#
+    private static let REGEX_TEXTAREA_OPEN = #"<textarea([^>]*)>"#
+    private static let REGEX_ADRESAT_RADIO =
+        #"<input[^>]*name=["']adresat["'][^>]*value=["']([^"']+)["'][^>]*onclick=["']([^"']*)["'][^>]*>[\s\S]{0,300}?<label[^>]*>(.*?)</label>"#
+    private static let REGEX_DIGITS_2PLUS = #"(\d{2,})"#
+    private static let REGEX_LINE_ROW = #"<tr[^>]*class=["'][^"']*line[01][^"']*["'][^>]*>(.*?)</tr>"#
+    private static let REGEX_DOKOGO_INPUT = #"(<input[^>]*name=["']DoKogo\[\]["'][^>]*>)"#
+    private static let REGEX_SPAN_TEXT = #"<span[^>]*>(.*?)</span>"#
+    private static let REGEX_LABEL_TEXT = #"<label[^>]*>(.*?)</label>"#
+    private static let REGEX_IMG_TITLE = #"<img[^>]*title=["']([^"']+)["']"#
+    private static let REGEX_SEND_OK = #"(?i)(została|zostały) wysłan|wiadomość (została )?wysłana"#
+    private static let REGEX_SEND_ERROR =
+        #"class=["'][^"']*(?:error|red|blad|komunikat|warning-box)[^"']*["'][^>]*>(.*?)</"#
+
+    private static let composeURL = "https://synergia.librus.pl/wiadomosci/2/5"
+    private static let carriedHiddenFields = [
+        "requestkey", "filtrUzytkownikow", "idPojemnika", "Rodzaj",
+        "poprzednia", "fileStorageIdentifier",
+    ]
+
+    private struct ComposeForm {
+        let html: String
+        let url: String
+        let action: String
+        var hidden: [String: String]
+    }
+
+    private func loadComposeForm() async throws -> ComposeForm {
+        let (data, resp) = try await get(Self.composeURL)
+        let html = String(data: data, encoding: .utf8) ?? ""
+        let final = resp?.url?.absoluteString ?? Self.composeURL
+        if final.contains("/loguj") || html.contains(">Brak dostepu<") || html.contains("stop.png") {
+            throw APIError.messageBridgeFailed("brak dostepu do formularza wiadomosci - " + snippet(html))
+        }
+        var hidden: [String: String] = [:]
+        for m in HTTP.allMatches(REGEX_HIDDEN_INPUT, in: html) where m.count > 1 {
+            guard let name = HTTP.firstMatch(REGEX_NAME_ATTR, in: m[1]) else { continue }
+            let value = HTTP.firstMatch(REGEX_VALUE_ATTR, in: m[1]) ?? ""
+            if hidden[name] == nil { hidden[name] = value }
+        }
+        if hidden["requestkey"] == nil,
+           let csrf = HTTP.firstMatch(REGEX_CSRF_JS, in: html) {
+            hidden["requestkey"] = csrf
+        }
+        let action = HTTP.firstMatch(REGEX_FORM_ACTION_NAMED, in: html)
+            ?? HTTP.firstMatch(REGEX_FORM_ACTION_ANY, in: html)
+            ?? "/wiadomosci/2/5"
+        return ComposeForm(html: html, url: final,
+                           action: Self.absolute(action, base: resp?.url), hidden: hidden)
+    }
+
+    /// Step 1 -- recipient categories (the `adresat` radios).
+    func recipientCategories() async throws -> [RecipientCategory] {
         try await ensureSynergiaSession()
-        let form = try await composeForm()
-        guard let list = Self.parseRecipientList(form.html) else {
-            throw APIError.messageBridgeFailed("brak kategorii odbiorców · " + Self.formDump(form.html))
+        let form = try await loadComposeForm()
+        let cats = Self.parseCategories(form.html)
+        guard !cats.isEmpty else {
+            throw APIError.messageBridgeFailed("brak kategorii odbiorcow - " + Self.formDump(form.html))
+        }
+        return cats
+    }
+
+    private static func parseCategories(_ html: String) -> [RecipientCategory] {
+        var out: [RecipientCategory] = []
+        var seen = Set<String>()
+        for m in HTTP.allMatches(REGEX_ADRESAT_RADIO, in: html) where m.count > 3 {
+            let value = m[1]
+            guard seen.insert(value).inserted else { continue }
+            let nums = HTTP.allMatches(REGEX_DIGITS_2PLUS, in: m[2]).compactMap { $0.count > 1 ? $0[1] : nil }
+            let classID = nums.last.flatMap { $0 == "0" ? nil : $0 }
+            out.append(RecipientCategory(id: value,
+                                         name: stripHTML(m[3]).nonEmpty ?? value,
+                                         classID: classID))
+        }
+        return out
+    }
+
+    /// Step 2 -- the people inside a category, via `POST /getRecipients`.
+    func recipients(in category: RecipientCategory) async throws -> RecipientList {
+        try await ensureSynergiaSession()
+        let form = try await loadComposeForm()
+
+        var body: [(String, String)] = [
+            ("typAdresata", category.id),
+            ("poprzednia", "5"),
+            ("tabZaznaczonych", ""),
+            ("czyWirtualneKlasy", "false"),
+            ("idGrupy", "0"),
+        ]
+        if let classID = category.classID {
+            body += [("klasa_rada_rodzicow", classID), ("klasa_opiekunowie", classID),
+                     ("klasa_rodzice", classID)]
+        }
+
+        let (data, resp) = try await post("https://synergia.librus.pl/getRecipients",
+                                          pairs: body,
+                                          headers: ["requestkey": form.hidden["requestkey"] ?? "",
+                                                    "X-Requested-With": "XMLHttpRequest",
+                                                    "Referer": Self.composeURL])
+        let html = String(data: data, encoding: .utf8) ?? ""
+        guard let list = Self.parsePeople(html), !list.people.isEmpty else {
+            throw APIError.messageBridgeFailed(
+                "brak osob w kategorii [\(resp?.statusCode ?? 0)] - "
+                    + Self.formDump(html) + " -- " + snippet(html, 260))
         }
         return list
     }
 
-    /// Step 2 — the people inside a category. Librus expands the list once the
-    /// category radio is picked, so replay that as a form POST (then a couple of
-    /// GET shapes) and parse whichever comes back with a person list.
-    func recipients(inCategory categoryID: String) async throws -> RecipientList {
-        try await ensureSynergiaSession()
-        let form = try await composeForm()
-        let categoryField = Self.parseRecipientList(form.html)?.field ?? "adresat"
-
-        var fields = HTTP.hiddenInputs(in: form.html)
-        fields[categoryField] = categoryID
-        var attempts: [String] = []
-
-        if let (data, _) = try? await post("https://synergia.librus.pl/wiadomosci",
-                                           pairs: fields.map { ($0.key, $0.value) }) {
-            let html = String(data: data, encoding: .utf8) ?? ""
-            if let list = Self.parsePeople(html, excluding: categoryField) { return list }
-            attempts.append("POST /wiadomosci → " + Self.formDump(html))
-        }
-        for url in ["https://synergia.librus.pl/wiadomosci/2/5?\(categoryField)=\(categoryID)",
-                    "https://synergia.librus.pl/wiadomosci/uzytkownicy/\(categoryID)"] {
-            guard let (data, resp) = try? await get(url) else { continue }
-            let html = String(data: data, encoding: .utf8) ?? ""
-            if let list = Self.parsePeople(html, excluding: categoryField) { return list }
-            attempts.append("\(shortPath(url))[\(resp?.statusCode ?? 0)] " + Self.formMarkers(html))
-        }
-        throw APIError.messageBridgeFailed(
-            "nie udało się rozwinąć listy osób · " + attempts.joined(separator: " ·· "))
-    }
-
-    /// Recipient inputs that are *not* the category control — i.e. the actual people.
-    private static func parsePeople(_ html: String, excluding categoryField: String) -> RecipientList? {
-        var byField: [String: [Recipient]] = [:]
-        var multipleByField: [String: Bool] = [:]
-
-        for m in HTTP.allMatches(#"<tr[^>]*>(.*?)</tr>"#, in: html) where m.count > 1 {
+    private static func parsePeople(_ html: String) -> RecipientList? {
+        var people: [Recipient] = []
+        var seen = Set<String>()
+        var multiple = true
+        for m in HTTP.allMatches(REGEX_LINE_ROW, in: html) where m.count > 1 {
             let row = m[1]
-            guard let tag = HTTP.firstMatch(#"(<input[^>]*type=["'](?:radio|checkbox)["'][^>]*>)"#, in: row),
-                  let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: tag),
-                  name != categoryField,
-                  let value = HTTP.firstMatch(#"value=["']([^"']+)["']"#, in: tag),
-                  !value.isEmpty, value != "0" else { continue }
-            let cells = HTTP.allMatches(#"<td[^>]*>(.*?)</td>"#, in: row)
-                .compactMap { $0.count > 1 ? stripHTML($0[1]) : nil }
-                .filter { !$0.isEmpty }
-            let label = cells.joined(separator: " · ")
-            guard label.contains(" "), label.count >= 5 else { continue }
-            byField[name, default: []].append(Recipient(id: value, name: label, group: name))
-            multipleByField[name] = tag.range(of: #"type=["']checkbox["']"#,
-                                              options: [.regularExpression, .caseInsensitive]) != nil
+            guard let tag = HTTP.firstMatch(REGEX_DOKOGO_INPUT, in: row),
+                  let value = HTTP.firstMatch(REGEX_VALUE_ATTR, in: tag),
+                  !value.isEmpty, value != "0", seen.insert(value).inserted else { continue }
+            let name = HTTP.firstMatch(REGEX_SPAN_TEXT, in: row).flatMap { stripHTML($0).nonEmpty }
+                ?? HTTP.firstMatch(REGEX_LABEL_TEXT, in: row).flatMap { stripHTML($0).nonEmpty }
+                ?? value
+            let role = HTTP.firstMatch(REGEX_IMG_TITLE, in: row).map(stripHTML)
+            multiple = tag.range(of: "type=[\"']radio[\"']",
+                                 options: [.regularExpression, .caseInsensitive]) == nil
+            people.append(Recipient(id: value,
+                                    name: role.map { "\(name) - \($0)" } ?? name,
+                                    group: "DoKogo[]"))
         }
-        guard let best = byField.max(by: { $0.value.count < $1.value.count }), !best.value.isEmpty else {
-            return nil
-        }
+        guard !people.isEmpty else { return nil }
         return RecipientList(
-            people: best.value.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
-            field: best.key,
-            allowsMultiple: multipleByField[best.key] ?? true
+            people: people.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
+            field: "DoKogo[]",
+            allowsMultiple: multiple
         )
     }
 
-    /// Locate the "new message" page by following the compose link off the inbox
-    /// (Librus moves it between releases), then fall back to the known shapes.
-    private func composeForm() async throws -> (html: String, url: String) {
-        var candidates: [String] = []
-        if let (listData, _) = try? await get("https://synergia.librus.pl/wiadomosci") {
-            candidates = Self.composeLinks(in: String(data: listData, encoding: .utf8) ?? "")
-        }
-        for fallback in ["https://synergia.librus.pl/wiadomosci/2/6",
-                         "https://synergia.librus.pl/wiadomosci/2/5",
-                         "https://synergia.librus.pl/wiadomosci/2"]
-        where !candidates.contains(fallback) {
-            candidates.append(fallback)
-        }
-
-        var tried: [String] = []
-        var richest: (url: String, html: String)?
-        for url in candidates.prefix(8) {
-            guard let (data, resp) = try? await get(url) else { continue }
-            let html = String(data: data, encoding: .utf8) ?? ""
-            if Self.parseRecipientList(html) != nil { return (html, url) }
-            tried.append("\(shortPath(url))[\(resp?.statusCode ?? 0)] \(Self.formMarkers(html))")
-            if html.range(of: "<form", options: .caseInsensitive) != nil,
-               html.count > (richest?.html.count ?? 0) {
-                richest = (url, html)
-            }
-        }
-        var detail = "nie znalazłem odbiorców w formularzu · sprawdzone: "
-            + (tried.isEmpty ? "(żaden adres nie odpowiedział)" : tried.joined(separator: " | "))
-        if let richest {
-            detail += " ·· \(shortPath(richest.url)): " + Self.formDump(richest.html)
-        }
-        throw APIError.messageBridgeFailed(detail)
-    }
-
-    /// Links on the inbox page that could open the compose view — text-matched
-    /// ones ("Napisz wiadomość") first, then any `/wiadomosci/2…` href.
-    private static func composeLinks(in html: String) -> [String] {
-        var byText: [String] = []
-        var byHref: [String] = []
-        var seen = Set<String>()
-        let base = URL(string: "https://synergia.librus.pl/wiadomosci")
-
-        for m in HTTP.allMatches(
-            #"<a[^>]+href=["']([^"']+)["'][^>]*>([^<]*(?:[Nn]apisz|[Nn]owa wiadomo|[Uu]twórz)[^<]*)</a>"#,
-            in: html) where m.count > 1 {
-            guard seen.insert(m[1]).inserted else { continue }
-            byText.append(absolute(m[1], base: base))
-        }
-        for m in HTTP.allMatches(#"<a[^>]+href=["']([^"']*wiadomosci/2[^"']*)["']"#, in: html)
-        where m.count > 1 {
-            guard seen.insert(m[1]).inserted else { continue }
-            byHref.append(absolute(m[1], base: base))
-        }
-        return byText + byHref
-    }
-
-    /// Compact "what's on this page" summary for remote debugging.
-    private static func formMarkers(_ html: String) -> String {
-        var out = ["\(html.count)B"]
-        for key in ["<form", "checkbox", "<select", "<textarea", "DoKogo", "adresat",
-                    "odbiorc", "tresc", "temat", "Brak dostępu"] {
-            if html.range(of: key, options: .caseInsensitive) != nil { out.append(key) }
-        }
-        return out.joined(separator: ",")
-    }
-
+    /// Step 3 -- send.
     @discardableResult
     func send(recipientLoginIds: [String], subject: String, body: String,
               recipientField: String? = nil,
@@ -265,52 +291,37 @@ actor MessagesClient {
         let ids = recipientLoginIds.filter { !$0.isEmpty }
         guard !ids.isEmpty else { throw APIError.messageBridgeFailed("brak odbiorcy") }
 
-        let form = try await composeForm()
-        let formHTML = form.html
+        let form = try await loadComposeForm()
+        let field = recipientField ?? "DoKogo[]"
 
-        var fields = HTTP.hiddenInputs(in: formHTML)
-        fields["temat"] = subject
-        fields["tresc"] = body
-        if let category { fields[category.field] = category.id }
-        let submitName = HTTP.firstMatch(#"<input[^>]*type=["']submit["'][^>]*name=["']([^"']+)["']"#, in: formHTML)
-            ?? HTTP.firstMatch(#"<input[^>]*name=["']([^"']+)["'][^>]*type=["']submit["']"#, in: formHTML)
-        fields[submitName ?? "wyslij"] = "Wyślij"
-
-        // Use the recipient field name exactly as the form spells it (it already
-        // carries `[]` when Librus expects repeats).
-        let field = recipientField ?? Self.parseRecipientList(formHTML)?.field ?? "adresat"
-
-        // Preserve any other select's default (e.g. the recipient-type dropdown).
-        for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: formHTML) where sm.count > 2 {
-            guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]),
-                  name != field,
-                  let selected = HTTP.firstMatch(#"<option[^>]*value=["']([^"']*)["'][^>]*selected"#, in: sm[2])
-            else { continue }
-            fields[name] = selected
+        var pairs: [(String, String)] = []
+        for key in Self.carriedHiddenFields {
+            let fallback = (key == "Rodzaj") ? "0" : (key == "poprzednia" ? "5" : "")
+            pairs.append((key, form.hidden[key] ?? fallback))
         }
+        if let category { pairs.append((category.field, category.id)) }
+        for id in ids {
+            pairs.append((field, id))
+            pairs.append(("DoKogo_hid[]", id))
+        }
+        pairs.append(("temat", subject))
+        pairs.append(("tresc", body))
+        pairs.append(("wyslij", "Wyslij"))
 
-        // The recipient field repeats once per person, so the body has to be ordered.
-        var pairs: [(String, String)] = ids.map { (field, $0) }
-        pairs.append(contentsOf: fields.map { ($0.key, $0.value) })
-
-        let action = HTTP.firstMatch(#"<form[^>]*action=["']([^"']*wiadomosci[^"']*)["']"#, in: formHTML)
-            .map { Self.absolute($0, base: URL(string: form.url)) } ?? form.url
-
-        let (respData, resp) = try await post(action, pairs: pairs)
+        let (respData, resp) = try await post(form.action, pairs: pairs,
+                                              headers: ["Referer": form.url])
         let respHTML = String(data: respData, encoding: .utf8) ?? ""
         let finalURL = resp?.url?.absoluteString ?? ""
 
-        if respHTML.range(of: #"(?i)(została|zostały) wysłan|wiadomość wysłana"#,
-                          options: .regularExpression) != nil
-            || (finalURL.contains("/wiadomosci") && !finalURL.contains("/2/")) {
+        if respHTML.range(of: REGEX_SEND_OK, options: .regularExpression) != nil
+            || finalURL.hasSuffix("/wiadomosci/5") || finalURL.hasSuffix("/wiadomosci/6") {
             return 0
         }
-        let err = Self.firstGroup(#"class=["'][^"']*(?:error|red|blad|komunikat)[^"']*["'][^>]*>(.*?)<"#, respHTML)
+        let err = Self.firstGroup(REGEX_SEND_ERROR, respHTML)
         throw APIError.messageBridgeFailed(
-            err.map(Self.stripHTML)?.nonEmpty ?? ("wysyłka nie powiodła się · " + Self.formRegion(respHTML)))
+            err.flatMap { Self.stripHTML($0).nonEmpty }
+                ?? "wysylka nie powiodla sie [\(resp?.statusCode ?? 0)] - " + snippet(respHTML, 300))
     }
-
-    private static let composeURL = "https://synergia.librus.pl/wiadomosci/2/5"
 
     private static func absolute(_ path: String, base: URL?) -> String {
         if path.hasPrefix("http") { return path }
@@ -318,140 +329,26 @@ actor MessagesClient {
             .absoluteString ?? composeURL
     }
 
-    /// The recipient control on the Librus compose form. On this school's Synergia
-    /// it's `<input type="radio" name="adresat">` inside a table row (so the label
-    /// lives in the sibling `<td>`s), hence single-selection.
-    struct RecipientList: Sendable {
-        var people: [Recipient]
-        var field: String
-        var allowsMultiple: Bool
-    }
-
-    private static func parseRecipientList(_ html: String) -> RecipientList? {
-        var people: [Recipient] = []
-        var seen = Set<String>()
-        var field = ""
-        var multiple = true
-
-        func wanted(_ name: String) -> Bool {
-            let l = name.lowercased()
-            return l.contains("kogo") || l.contains("adresat") || l.contains("odbiorc")
-                || l.contains("receiver") || l.contains("nauczyciel")
-        }
-        func looksLikePerson(_ label: String) -> Bool { label.contains(" ") && label.count >= 5 }
-
-        // 1. Table rows holding a radio/checkbox — label comes from the row's cells.
-        for m in HTTP.allMatches(#"<tr[^>]*>(.*?)</tr>"#, in: html) where m.count > 1 {
-            let row = m[1]
-            guard let tag = HTTP.firstMatch(#"(<input[^>]*type=["'](?:radio|checkbox)["'][^>]*>)"#, in: row),
-                  let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: tag), wanted(name),
-                  let value = HTTP.firstMatch(#"value=["']([^"']+)["']"#, in: tag),
-                  !value.isEmpty, value != "0", seen.insert(value).inserted else { continue }
-            let cells = HTTP.allMatches(#"<td[^>]*>(.*?)</td>"#, in: row)
-                .compactMap { $0.count > 1 ? stripHTML($0[1]) : nil }
-                .filter { !$0.isEmpty }
-            field = name
-            multiple = tag.range(of: #"type=["']radio["']"#,
-                                 options: [.regularExpression, .caseInsensitive]) == nil
-            people.append(Recipient(id: value,
-                                    name: cells.joined(separator: " · ").nonEmpty ?? value,
-                                    group: name))
-        }
-
-        // 2. Flat "input then label text" layout.
-        if people.isEmpty {
-            for m in HTTP.allMatches(#"<input([^>]*type=["'](?:radio|checkbox)["'][^>]*)>([^<]{0,90})"#, in: html)
-            where m.count > 2 {
-                let tag = m[1]
-                guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: tag), wanted(name),
-                      let value = HTTP.firstMatch(#"value=["']([^"']+)["']"#, in: tag),
-                      !value.isEmpty, value != "0", seen.insert(value).inserted else { continue }
-                field = name
-                multiple = tag.range(of: #"type=["']radio["']"#,
-                                     options: [.regularExpression, .caseInsensitive]) == nil
-                people.append(Recipient(id: value, name: stripHTML(m[2]).nonEmpty ?? value, group: name))
-            }
-        }
-
-        // 3. A <select> of people.
-        if people.isEmpty {
-            var chosen: (name: String, items: [Recipient], multi: Bool)?
-            for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: html) where sm.count > 2 {
-                let selName = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]) ?? ""
-                let isMulti = sm[1].range(of: "multiple", options: .caseInsensitive) != nil
-                var items: [Recipient] = []
-                for om in HTTP.allMatches(#"<option[^>]*value=["']([^"']+)["'][^>]*>(.*?)</option>"#, in: sm[2])
-                where om.count > 2 {
-                    let value = om[1]
-                    let label = stripHTML(om[2])
-                    guard value != "0", !value.isEmpty, !label.isEmpty else { continue }
-                    items.append(Recipient(id: value, name: label, group: selName))
-                }
-                guard !items.isEmpty else { continue }
-                if wanted(selName) { chosen = (selName, items, isMulti); break }
-                let peopleish = items.filter { looksLikePerson($0.name) }
-                if peopleish.count >= 3, peopleish.count > (chosen?.items.count ?? 0) {
-                    chosen = (selName, peopleish, isMulti)
-                }
-            }
-            if let chosen {
-                field = chosen.name
-                multiple = chosen.multi
-                people = chosen.items
-            }
-        }
-
-        guard !people.isEmpty else { return nil }
-        return RecipientList(
-            people: people.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
-            field: field.isEmpty ? "adresat" : field,
-            allowsMultiple: multiple
-        )
-    }
-
-    /// Structural summary of a form: action, every select with its first options,
-    /// input names/types, textarea names. Compact enough to paste into a report.
     private static func formDump(_ html: String) -> String {
-        var out: [String] = []
-        if let tag = HTTP.firstMatch(#"<form([^>]*)>"#, in: html) {
-            out.append("form{" + collapse(tag).prefix(120) + "}")
-        }
-        for m in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: html) where m.count > 2 {
-            let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: m[1]) ?? "?"
-            let opts = HTTP.allMatches(#"<option[^>]*value=["']([^"']*)["'][^>]*>(.*?)</option>"#, in: m[2])
-                .compactMap { $0.count > 2 ? "\($0[1])=\(stripHTML($0[2]).prefix(22))" : nil }
-            out.append("select[\(name)]×\(opts.count){" + opts.prefix(3).joined(separator: ";") + "}")
+        var out = ["\(html.count)B"]
+        if let tag = HTTP.firstMatch(REGEX_FORM_OPEN, in: html) {
+            out.append("form{" + collapse(tag).prefix(90) + "}")
         }
         var inputs = Set<String>()
-        for m in HTTP.allMatches(#"<input([^>]*)>"#, in: html) where m.count > 1 {
-            guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: m[1]) else { continue }
-            let type = HTTP.firstMatch(#"type=["']([^"']+)["']"#, in: m[1]) ?? "?"
-            inputs.insert("\(name):\(type)")
+        for m in HTTP.allMatches(REGEX_INPUT_OPEN, in: html) where m.count > 1 {
+            guard let name = HTTP.firstMatch(REGEX_NAME_ATTR, in: m[1]) else { continue }
+            inputs.insert("\(name):\(HTTP.firstMatch(REGEX_TYPE_ATTR, in: m[1]) ?? "?")")
         }
-        out.append("inputs{" + inputs.sorted().prefix(22).joined(separator: " ") + "}")
-        let areas = HTTP.allMatches(#"<textarea([^>]*)>"#, in: html)
-            .compactMap { $0.count > 1 ? HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: $0[1]) : nil }
+        out.append("inputs{" + inputs.sorted().prefix(24).joined(separator: " ") + "}")
+        let areas = HTTP.allMatches(REGEX_TEXTAREA_OPEN, in: html)
+            .compactMap { $0.count > 1 ? HTTP.firstMatch(REGEX_NAME_ATTR, in: $0[1]) : nil }
         if !areas.isEmpty { out.append("textarea{" + areas.joined(separator: " ") + "}") }
-        return out.joined(separator: " · ")
+        return out.joined(separator: " - ")
     }
 
     private static func collapse(_ s: String) -> String {
-        s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
-    }
-
-    /// Whitespace-collapsed slice around the most informative marker on the page,
-    /// for remote debugging when a form can't be parsed.
-    private static func formRegion(_ html: String) -> String {
-        var anchor = html.startIndex
-        for marker in ["<form", "DoKogo", "adresat", "odbiorc", "checkbox", "<select", "<textarea"] {
-            if let r = html.range(of: marker, options: .caseInsensitive) { anchor = r.lowerBound; break }
-        }
-        let start = html.index(anchor, offsetBy: -200, limitedBy: html.startIndex) ?? html.startIndex
-        let end = html.index(anchor, offsetBy: 1000, limitedBy: html.endIndex) ?? html.endIndex
-        return formMarkers(html) + " · "
-            + String(html[start..<end])
-                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
     // MARK: - Deep diagnostic
@@ -487,13 +384,13 @@ actor MessagesClient {
             lines.append("linki: " + hrefs.sorted().prefix(16).joined(separator: " "))
         }
         do {
-            let form = try await composeForm()
-            let list = Self.parseRecipientList(form.html)
-            lines.append("formularz: \(shortPath(form.url)) · pole=\(list?.field ?? "?")"
-                + " wielu=\(list?.allowsMultiple.description ?? "?")"
-                + " odbiorców=\(list?.people.count ?? 0)"
-                + (list?.people.first.map { " · np. \($0.name.prefix(40))" } ?? ""))
-            lines.append("  " + Self.formDump(form.html))
+            let cats = try await recipientCategories()
+            lines.append("kategorie: " + cats.map { "\($0.name)=\($0.id)" }.joined(separator: ", "))
+            if let first = cats.first(where: { $0.id == "nauczyciel" }) ?? cats.first {
+                let list = try await recipients(in: first)
+                lines.append("[\(first.name)] pole=\(list.field) wielu=\(list.allowsMultiple) osob=\(list.people.count)"
+                    + (list.people.first.map { " np. \($0.name.prefix(40))" } ?? ""))
+            }
         } catch {
             lines.append("formularz: " + ((error as? LocalizedError)?.errorDescription ?? "\(error)"))
         }
@@ -576,15 +473,20 @@ actor MessagesClient {
         }
     }
 
-    private func post(_ urlString: String, pairs: [(String, String)]) async throws -> (Data, HTTPURLResponse?) {
+    private func post(_ urlString: String, pairs: [(String, String)],
+                      headers: [String: String] = [:]) async throws -> (Data, HTTPURLResponse?) {
         guard let url = URL(string: urlString) else {
             throw APIError.messageBridgeFailed("zły adres: \(urlString)")
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/x-www-form-urlencoded; charset=UTF-8", forHTTPHeaderField: "Content-Type")
         request.setValue(Librus.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("https://synergia.librus.pl", forHTTPHeaderField: "Origin")
         request.setValue("https://synergia.librus.pl/wiadomosci", forHTTPHeaderField: "Referer")
+        for (name, value) in headers where !value.isEmpty {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.httpBody = HTTP.formBody(pairs)
         do {
             let (data, resp) = try await http.data(for: request)

@@ -400,16 +400,16 @@ final class DataRepository {
 
     /// Sends a reply. Returns nil on success, or an error message to show the user.
     func sendReply(to recipientLoginId: String, subject: String, body: String) async -> String? {
-        await sendMessage(to: [recipientLoginId], subject: subject, body: body)
+        await sendMessage(to: [recipientLoginId], subject: subject, body: body, category: nil)
     }
 
     /// Sends a new message. Returns nil on success, or an error message to show.
     func sendMessage(to recipientIDs: [String], subject: String, body: String,
-                     field: String? = nil,
-                     category: (field: String, id: String)? = nil) async -> String? {
+                     category: MessagesClient.RecipientCategory?) async -> String? {
         do {
+            let cat = category.map { (field: "adresat", id: $0.id) }
             try await messages.send(recipientLoginIds: recipientIDs, subject: subject, body: body,
-                                    recipientField: field, category: category)
+                                    recipientField: "DoKogo[]", category: cat)
             await loadMessages()
             return nil
         } catch {
@@ -417,20 +417,21 @@ final class DataRepository {
         }
     }
 
-    /// Step 1 of composing: recipient categories (Nauczyciele, Pedagog…).
-    func loadRecipientCategories() async -> (list: MessagesClient.RecipientList?, error: String?) {
+    /// Step 1 of composing: recipient categories (Nauczyciele, Wychowawcy…).
+    func loadRecipientCategories() async
+        -> (categories: [MessagesClient.RecipientCategory], error: String?) {
         do {
             return (try await messages.recipientCategories(), nil)
         } catch {
-            return (nil, (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            return ([], (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
 
     /// Step 2: the people inside a category.
-    func loadRecipients(inCategory categoryID: String)
+    func loadRecipients(in category: MessagesClient.RecipientCategory)
         async -> (list: MessagesClient.RecipientList?, error: String?) {
         do {
-            return (try await messages.recipients(inCategory: categoryID), nil)
+            return (try await messages.recipients(in: category), nil)
         } catch {
             return (nil, (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }

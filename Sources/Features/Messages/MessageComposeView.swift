@@ -1,18 +1,15 @@
 import SwiftUI
 
 /// Compose a new Synergia message. Librus picks recipients in two steps —
-/// first a category (Nauczyciele, Pedagog…), then the people inside it — so the
+/// first a category (Nauczyciele, Wychowawcy…), then the people inside it — so the
 /// picker mirrors that. Sending is confirmed explicitly before it leaves the device.
 struct MessageComposeView: View {
     @Environment(DataRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
 
-    @State private var categories: MessagesClient.RecipientList?
-    @State private var chosenCategory: MessagesClient.Recipient?
-    @State private var people: [MessagesClient.Recipient] = []
-    @State private var peopleField: String?
-    @State private var peopleAllowMultiple = true
-    @State private var selected: Set<String> = []
+    @State private var categories: [MessagesClient.RecipientCategory] = []
+    @State private var category: MessagesClient.RecipientCategory?
+    @State private var selectedPeople: [MessagesClient.Recipient] = []
 
     @State private var subject = ""
     @State private var text = ""
@@ -22,11 +19,11 @@ struct MessageComposeView: View {
     @State private var confirm = false
 
     private var selectedNames: String {
-        people.filter { selected.contains($0.id) }.map(\.name).joined(separator: ", ")
+        selectedPeople.map(\.name).joined(separator: ", ")
     }
 
     private var canSend: Bool {
-        !selected.isEmpty
+        !selectedPeople.isEmpty
             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !sending
     }
@@ -38,28 +35,21 @@ struct MessageComposeView: View {
                     if loading {
                         HStack(spacing: Theme.Space.sm) {
                             ProgressView()
-                            Text("Wczytywanie odbiorców…").foregroundStyle(.secondary)
+                            Text("Wczytywanie…").foregroundStyle(.secondary)
                         }
-                    } else if let categories, !categories.people.isEmpty {
+                    } else if !categories.isEmpty {
                         NavigationLink {
-                            CategoryPicker(
-                                categories: categories.people,
-                                chosenCategory: $chosenCategory,
-                                people: $people,
-                                peopleField: $peopleField,
-                                peopleAllowMultiple: $peopleAllowMultiple,
-                                selected: $selected
-                            )
-                            .environment(repo)
+                            CategoryPicker(categories: categories,
+                                           category: $category,
+                                           selectedPeople: $selectedPeople)
+                                .environment(repo)
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(selected.isEmpty ? "Wybierz odbiorcę" : selectedNames)
-                                    .foregroundStyle(selected.isEmpty ? Color.secondary : Color.primary)
+                                Text(selectedPeople.isEmpty ? "Wybierz odbiorców" : selectedNames)
+                                    .foregroundStyle(selectedPeople.isEmpty ? Color.secondary : Color.primary)
                                     .lineLimit(2)
-                                if let chosenCategory, !selected.isEmpty {
-                                    Text(chosenCategory.name)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                if let category, !selectedPeople.isEmpty {
+                                    Text(category.name).font(.caption2).foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -79,7 +69,7 @@ struct MessageComposeView: View {
                     TextEditor(text: $text).frame(minHeight: 180)
                 }
 
-                if let errorText, categories != nil {
+                if let errorText, !categories.isEmpty {
                     Section {
                         Text(errorText)
                             .font(.footnote)
@@ -118,7 +108,7 @@ struct MessageComposeView: View {
     private func loadCategories() async {
         loading = true
         let result = await repo.loadRecipientCategories()
-        categories = result.list
+        categories = result.categories
         errorText = result.error
         loading = false
     }
@@ -127,12 +117,8 @@ struct MessageComposeView: View {
         sending = true
         errorText = nil
         Task {
-            let category = chosenCategory.map {
-                (field: categories?.field ?? "adresat", id: $0.id)
-            }
             let failure = await repo.sendMessage(
-                to: Array(selected), subject: subject, body: text,
-                field: peopleField, category: category)
+                to: selectedPeople.map(\.id), subject: subject, body: text, category: category)
             sending = false
             if let failure {
                 errorText = failure
@@ -149,27 +135,19 @@ struct MessageComposeView: View {
 
 private struct CategoryPicker: View {
     @Environment(DataRepository.self) private var repo
-    let categories: [MessagesClient.Recipient]
-    @Binding var chosenCategory: MessagesClient.Recipient?
-    @Binding var people: [MessagesClient.Recipient]
-    @Binding var peopleField: String?
-    @Binding var peopleAllowMultiple: Bool
-    @Binding var selected: Set<String>
+    let categories: [MessagesClient.RecipientCategory]
+    @Binding var category: MessagesClient.RecipientCategory?
+    @Binding var selectedPeople: [MessagesClient.Recipient]
 
     var body: some View {
-        List(categories) { category in
+        List(categories) { cat in
             NavigationLink {
-                PeoplePicker(
-                    category: category,
-                    chosenCategory: $chosenCategory,
-                    people: $people,
-                    peopleField: $peopleField,
-                    allowsMultiple: $peopleAllowMultiple,
-                    selected: $selected
-                )
-                .environment(repo)
+                PeoplePicker(category: cat,
+                             category_: $category,
+                             selectedPeople: $selectedPeople)
+                    .environment(repo)
             } label: {
-                Text(category.name).lineLimit(2)
+                Text(cat.name).lineLimit(2)
             }
         }
         .listStyle(.insetGrouped)
@@ -186,13 +164,13 @@ private struct PeoplePicker: View {
     @Environment(DataRepository.self) private var repo
     @Environment(\.dismiss) private var dismiss
 
-    let category: MessagesClient.Recipient
-    @Binding var chosenCategory: MessagesClient.Recipient?
-    @Binding var people: [MessagesClient.Recipient]
-    @Binding var peopleField: String?
-    @Binding var allowsMultiple: Bool
-    @Binding var selected: Set<String>
+    let category: MessagesClient.RecipientCategory
+    @Binding var category_: MessagesClient.RecipientCategory?
+    @Binding var selectedPeople: [MessagesClient.Recipient]
 
+    @State private var people: [MessagesClient.Recipient] = []
+    @State private var allowsMultiple = true
+    @State private var selected: Set<String> = []
     @State private var loading = true
     @State private var errorText: String?
     @State private var search = ""
@@ -220,16 +198,7 @@ private struct PeoplePicker: View {
                 List(filtered) { person in
                     Button {
                         Haptics.selection()
-                        if allowsMultiple {
-                            if selected.contains(person.id) {
-                                selected.remove(person.id)
-                            } else {
-                                selected.insert(person.id)
-                            }
-                        } else {
-                            selected = [person.id]
-                            dismiss()
-                        }
+                        toggle(person)
                     } label: {
                         HStack(spacing: Theme.Space.md) {
                             Text(person.name)
@@ -250,20 +219,40 @@ private struct PeoplePicker: View {
             }
         }
         .background(Color.appGroupedBackground.ignoresSafeArea())
-        .navigationTitle(category.name)
+        .navigationTitle(allowsMultiple ? "\(category.name) (\(selected.count))" : category.name)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .onChange(of: selected) { _, _ in publish() }
+    }
+
+    private func toggle(_ person: MessagesClient.Recipient) {
+        if allowsMultiple {
+            if selected.contains(person.id) { selected.remove(person.id) }
+            else { selected.insert(person.id) }
+        } else {
+            selected = [person.id]
+            publish()
+            dismiss()
+        }
+    }
+
+    private func publish() {
+        category_ = category
+        selectedPeople = people.filter { selected.contains($0.id) }
     }
 
     private func load() async {
-        chosenCategory = category
-        selected = []
         loading = true
-        let result = await repo.loadRecipients(inCategory: category.id)
+        let result = await repo.loadRecipients(in: category)
         people = result.list?.people ?? []
-        peopleField = result.list?.field
         allowsMultiple = result.list?.allowsMultiple ?? true
         errorText = result.error
+        // Restore previous ticks if we come back to the same category.
+        if category_?.id == category.id {
+            selected = Set(selectedPeople.map(\.id))
+        } else {
+            selected = []
+        }
         loading = false
     }
 }
