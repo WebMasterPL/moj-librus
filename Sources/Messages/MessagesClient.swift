@@ -142,27 +142,28 @@ actor MessagesClient {
 
         var lines: [String] = ["sesja OK · \(lastTrail)"]
         lines.append("cookies: " + cookieInventory())
+        lines.append("hint: " + (loginHintURL() ?? "(brak)"))
         lines.append("spa: " + Self.pageMarkers(lastSPABody))
+        lines.append("spa-head: " + snippet(lastSPABody, 400))
         lines.append("apiToken \(tag(apiToken)) · oauthCk \(tag(oauthCk))")
 
         let api = "https://wiadomosci.librus.pl/api"
         let xml = "<service><header></header><data><archive>0</archive></data></service>"
         let probes: [Probe] = [
             Probe("inbox/messages · ciasteczka", "\(api)/inbox/messages"),
-            Probe("inbox/messages · Bearer api", "\(api)/inbox/messages", bearer: apiToken),
+            Probe("inbox/messages · Authorization goły token", "\(api)/inbox/messages", rawAuth: apiToken),
+            Probe("inbox/messages · X-Auth-Token", "\(api)/inbox/messages", xAuthToken: apiToken),
             Probe("inbox/messages · Bearer oauth_ck", "\(api)/inbox/messages", bearer: oauthCk),
-            Probe("inbox/messages · Referer synergia", "\(api)/inbox/messages", referer: true),
-            Probe("GET /api", api),
             Probe("GET /api/inbox", "\(api)/inbox"),
-            Probe("GET /api/me", "\(api)/me"),
-            Probe("GET /api/user", "\(api)/user"),
-            Probe("GET /api/account", "\(api)/account"),
             Probe("GET /api/inbox/folders", "\(api)/inbox/folders"),
-            Probe("GET /api/authentication · Bearer api", "\(api)/authentication", bearer: apiToken),
+            Probe("GET /api/me · ciasteczka", "\(api)/me"),
+            Probe("GET /api/me · Bearer api", "\(api)/me", bearer: apiToken),
+            Probe("POST /api/authentication", "\(api)/authentication", method: "POST"),
+            Probe("POST /api/login", "\(api)/login", method: "POST"),
+            Probe("GET synergia /wiadomosci/api/me", "https://synergia.librus.pl/wiadomosci/api/me"),
+            Probe("GET synergia /rodzina/wiadomosci", "https://synergia.librus.pl/rodzina/wiadomosci"),
             Probe("module · jar", "https://wiadomosci.librus.pl/module/Inbox/action/GetList",
                   method: "POST", xmlBody: xml),
-            Probe("module · explicit sid", "https://wiadomosci.librus.pl/module/Inbox/action/GetList",
-                  method: "POST", xmlBody: xml, explicitCookie: true),
         ]
         for p in probes {
             lines.append("· \(p.label): " + (await probeOne(p)))
@@ -177,12 +178,16 @@ actor MessagesClient {
         let url: String
         var method = "GET"
         var bearer: String? = nil
+        var rawAuth: String? = nil
+        var xAuthToken: String? = nil
         var referer = false
         var xmlBody: String? = nil
         var explicitCookie = false
         init(_ label: String, _ url: String, method: String = "GET", bearer: String? = nil,
-             referer: Bool = false, xmlBody: String? = nil, explicitCookie: Bool = false) {
+             rawAuth: String? = nil, xAuthToken: String? = nil, referer: Bool = false,
+             xmlBody: String? = nil, explicitCookie: Bool = false) {
             self.label = label; self.url = url; self.method = method; self.bearer = bearer
+            self.rawAuth = rawAuth; self.xAuthToken = xAuthToken
             self.referer = referer; self.xmlBody = xmlBody; self.explicitCookie = explicitCookie
         }
     }
@@ -198,6 +203,12 @@ actor MessagesClient {
         }
         if let bearer = p.bearer, !bearer.isEmpty {
             req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        }
+        if let raw = p.rawAuth, !raw.isEmpty {
+            req.setValue(raw, forHTTPHeaderField: "Authorization")
+        }
+        if let x = p.xAuthToken, !x.isEmpty {
+            req.setValue(x, forHTTPHeaderField: "X-Auth-Token")
         }
         if p.referer {
             req.setValue("https://synergia.librus.pl/", forHTTPHeaderField: "Referer")
@@ -230,19 +241,38 @@ actor MessagesClient {
     private func cookieInventory() -> String {
         let all = http.configuration.httpCookieStorage?.cookies ?? []
         guard !all.isEmpty else { return "(brak)" }
-        return all.map { "\($0.name)@\($0.domain)=\($0.value.prefix(4))…" }.joined(separator: " ")
+        // Full value for the "where to log in" hint cookie, short prefix for the rest.
+        return all.map { c in
+            if c.name == "access_denied_login_url" { return "\(c.name)=\(c.value)" }
+            return "\(c.name)@\(c.domain)=\(c.value.prefix(6))…"
+        }.joined(separator: " ")
+    }
+
+    private func loginHintURL() -> String? {
+        let v = cookie("access_denied_login_url", domainContains: "") ?? ""
+        let decoded = v.removingPercentEncoding ?? v
+        return decoded.hasPrefix("http") ? decoded : nil
     }
 
     private static func pageMarkers(_ body: String) -> String {
         guard !body.isEmpty else { return "(pusta)" }
         var out = ["\(body.count)B"]
         for key in ["iframe", "wiadomosci.librus.pl", "/api/", "Bearer", "access_token",
-                    "csrf", "apiUrl", "api_url", "window.__", "app.js", "main.js", "runtime"] {
+                    "csrf", "apiUrl", "api_url", "baseURL", "VUE_APP", "window.__",
+                    "app.js", "main.js", "dodatki", "aktywuj", "Mobilne"] {
             if body.range(of: key, options: .caseInsensitive) != nil { out.append(key) }
         }
-        let urls = Set(HTTP.allMatches(#"(https://[a-z0-9.\-]+\.librus\.pl/[^\s"'<>()\\]{0,70})"#, in: body)
+        // token-ish JSON pairs:  "token":"…"  "apiUrl":"…"  data-token="…"
+        for m in HTTP.allMatches(#"["'-]?(?:token|apiUrl|api_url|baseURL|accessToken|authToken)["']?\s*[:=]\s*["']([^"']{6,80})["']"#, in: body) where m.count > 1 {
+            out.append("val=\(m[1].prefix(48))")
+        }
+        // bare JWTs
+        if let jwt = HTTP.firstMatch(#"(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})"#, in: body) {
+            out.append("jwt=\(jwt.prefix(24))…")
+        }
+        let urls = Set(HTTP.allMatches(#"(https?://[a-z0-9.\-]+\.librus\.pl/[^\s"'<>()\\]{0,80})"#, in: body)
             .compactMap { $0.count > 1 ? $0[1] : nil })
-        if !urls.isEmpty { out.append("urls{" + urls.sorted().prefix(8).joined(separator: " ") + "}") }
+        if !urls.isEmpty { out.append("urls{" + urls.sorted().prefix(10).joined(separator: " ") + "}") }
         return out.joined(separator: ",")
     }
 
@@ -287,8 +317,12 @@ actor MessagesClient {
             let (data, resp) = try await get(bridge)
             let body = String(data: data, encoding: .utf8) ?? ""
             lastBody = body
-            if body.count > lastSPABody.count { lastSPABody = body }
-            note("\(shortPath(bridge)) [\(resp?.statusCode ?? 0)] \(shortPath(resp?.url?.absoluteString ?? "")) \(body.count)B")
+            let finalURL = resp?.url?.absoluteString ?? ""
+            // Keep the actual messages-app page (synergia .../wiadomosci, 200) —
+            // not whatever bigger login page a later hop lands on.
+            if finalURL.contains("synergia.librus.pl/wiadomosci") { lastSPABody = body }
+            else if lastSPABody.isEmpty { lastSPABody = body }
+            note("\(shortPath(bridge)) [\(resp?.statusCode ?? 0)] \(shortPath(finalURL)) \(body.count)B")
             try checkBlockers(body)
             try await followHTMLHops(from: resp?.url, body: body, note: note)
             if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
@@ -300,6 +334,22 @@ actor MessagesClient {
                 if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
             }
             if cookie("DZIENNIKSID", domainContains: "wiadomosci") != nil { break }
+        }
+
+        // 2b. Synergia parked an `access_denied_login_url` cookie — that's exactly
+        //     where it wants us to authenticate for the module. Follow it.
+        if let hint = loginHintURL() {
+            note("hint→\(shortPath(hint))")
+            if let (hintData, hintResp) = try? await get(hint) {
+                note("hint [\(hintResp?.statusCode ?? 0)] \(shortPath(hintResp?.url?.absoluteString ?? ""))")
+                let hintBody = String(data: hintData, encoding: .utf8) ?? ""
+                _ = try? await followHTMLHops(from: hintResp?.url, body: hintBody, note: note)
+            }
+            if let (d, r) = try? await get("https://synergia.librus.pl/wiadomosci") {
+                let b = String(data: d, encoding: .utf8) ?? ""
+                note("post-hint /wiadomosci [\(r?.statusCode ?? 0)] \(shortPath(r?.url?.absoluteString ?? "")) \(b.count)B")
+                if (r?.url?.absoluteString ?? "").contains("synergia.librus.pl/wiadomosci") { lastSPABody = b }
+            }
         }
 
         // 3. One more plain GET so wiadomosci.librus.pl finalises the session cookie.
