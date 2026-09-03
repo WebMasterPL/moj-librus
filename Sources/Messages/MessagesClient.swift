@@ -137,35 +137,75 @@ actor MessagesClient {
             return "sesja BŁĄD · \(lastTrail) · "
                 + ((error as? LocalizedError)?.errorDescription ?? "\(error)")
         }
+        let apiToken = (try? await session.validAccessToken()) ?? ""
+        let oauthCk = cookie("oauth_token", domainContains: "librus") ?? ""
+
         var lines: [String] = ["sesja OK · \(lastTrail)"]
         lines.append("cookies: " + cookieInventory())
         lines.append("spa: " + Self.pageMarkers(lastSPABody))
-        lines.append("spa-head: " + snippet(lastSPABody, 220))
+        lines.append("apiToken \(tag(apiToken)) · oauthCk \(tag(oauthCk))")
 
+        let api = "https://wiadomosci.librus.pl/api"
         let xml = "<service><header></header><data><archive>0</archive></data></service>"
-        let candidates: [(String, String, String?)] = [
-            ("module/Inbox/action/GetList", "https://wiadomosci.librus.pl/module/Inbox/action/GetList", xml),
-            ("synergia /wiadomosci/api/inbox/messages", "https://synergia.librus.pl/wiadomosci/api/inbox/messages", nil),
-            ("wiadomosci /api/inbox/messages", "https://wiadomosci.librus.pl/api/inbox/messages", nil),
-            ("wiadomosci /api/messages?folder=inbox", "https://wiadomosci.librus.pl/api/messages?folder=inbox", nil),
-            ("wiadomosci /api/v1/inbox", "https://wiadomosci.librus.pl/api/v1/inbox", nil),
+        let probes: [Probe] = [
+            Probe("inbox/messages · ciasteczka", "\(api)/inbox/messages"),
+            Probe("inbox/messages · Bearer api", "\(api)/inbox/messages", bearer: apiToken),
+            Probe("inbox/messages · Bearer oauth_ck", "\(api)/inbox/messages", bearer: oauthCk),
+            Probe("inbox/messages · Referer synergia", "\(api)/inbox/messages", referer: true),
+            Probe("GET /api", api),
+            Probe("GET /api/inbox", "\(api)/inbox"),
+            Probe("GET /api/me", "\(api)/me"),
+            Probe("GET /api/user", "\(api)/user"),
+            Probe("GET /api/account", "\(api)/account"),
+            Probe("GET /api/inbox/folders", "\(api)/inbox/folders"),
+            Probe("GET /api/authentication · Bearer api", "\(api)/authentication", bearer: apiToken),
+            Probe("module · jar", "https://wiadomosci.librus.pl/module/Inbox/action/GetList",
+                  method: "POST", xmlBody: xml),
+            Probe("module · explicit sid", "https://wiadomosci.librus.pl/module/Inbox/action/GetList",
+                  method: "POST", xmlBody: xml, explicitCookie: true),
         ]
-        for (name, url, xmlBody) in candidates {
-            lines.append("· \(name): " + (await probeOne(url: url, xmlBody: xmlBody)))
+        for p in probes {
+            lines.append("· \(p.label): " + (await probeOne(p)))
         }
         return lines.joined(separator: "\n")
     }
 
-    private func probeOne(url: String, xmlBody: String?) async -> String {
-        guard let u = URL(string: url) else { return "zły URL" }
+    private func tag(_ s: String) -> String { s.isEmpty ? "brak" : String(s.prefix(6)) + "…" }
+
+    private struct Probe {
+        let label: String
+        let url: String
+        var method = "GET"
+        var bearer: String? = nil
+        var referer = false
+        var xmlBody: String? = nil
+        var explicitCookie = false
+        init(_ label: String, _ url: String, method: String = "GET", bearer: String? = nil,
+             referer: Bool = false, xmlBody: String? = nil, explicitCookie: Bool = false) {
+            self.label = label; self.url = url; self.method = method; self.bearer = bearer
+            self.referer = referer; self.xmlBody = xmlBody; self.explicitCookie = explicitCookie
+        }
+    }
+
+    private func probeOne(_ p: Probe) async -> String {
+        guard let u = URL(string: p.url) else { return "zły URL" }
         var req = URLRequest(url: u)
+        req.httpMethod = p.method
         req.setValue(Librus.browserUserAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-        if let sid = dzienniksid { req.setValue("DZIENNIKSID=\(sid)", forHTTPHeaderField: "Cookie") }
-        if let xmlBody {
-            req.httpMethod = "POST"
+        if p.explicitCookie, let sid = dzienniksid {
+            req.setValue("DZIENNIKSID=\(sid)", forHTTPHeaderField: "Cookie")
+        }
+        if let bearer = p.bearer, !bearer.isEmpty {
+            req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        }
+        if p.referer {
+            req.setValue("https://synergia.librus.pl/", forHTTPHeaderField: "Referer")
+            req.setValue("https://synergia.librus.pl", forHTTPHeaderField: "Origin")
+        }
+        if let xml = p.xmlBody {
             req.setValue("application/xml", forHTTPHeaderField: "Content-Type")
-            req.httpBody = Data(xmlBody.utf8)
+            req.httpBody = Data(xml.utf8)
         } else {
             req.setValue("application/json", forHTTPHeaderField: "Accept")
         }
@@ -181,7 +221,7 @@ actor MessagesClient {
             else if text.contains("<html") || text.contains("<!DOCTYPE") { kind = "HTML" }
             else if text.contains("<") { kind = "XML" }
             else { kind = "text" }
-            return "[\(code)] \(data.count)B \(kind) " + snippet(data, 260)
+            return "[\(code)] \(data.count)B \(kind) " + snippet(data, 220)
         } catch {
             return "wyjątek: \(error.localizedDescription)"
         }

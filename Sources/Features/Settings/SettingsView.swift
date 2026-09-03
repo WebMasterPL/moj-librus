@@ -5,7 +5,9 @@ struct SettingsView: View {
     @Environment(DataRepository.self) private var repo
 
     @State private var showLogoutConfirm = false
-    @AppStorage(BackgroundRefresh.enabledKey) private var notifyNewGrades = false
+    @AppStorage(BackgroundRefresh.Keys.grades) private var notifyNewGrades = false
+    @AppStorage(BackgroundRefresh.Keys.timetable) private var notifyTimetable = false
+    @AppStorage(BackgroundRefresh.Keys.messages) private var notifyMessages = false
 
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -51,9 +53,15 @@ struct SettingsView: View {
 
             Section {
                 Toggle(isOn: $notifyNewGrades) {
-                    Label("Powiadomienia o nowych ocenach", systemImage: "bell.badge")
+                    Label("Nowe oceny", systemImage: "checkmark.seal")
                 }
-                if notifyNewGrades {
+                Toggle(isOn: $notifyTimetable) {
+                    Label("Zmiany w planie lekcji", systemImage: "calendar.badge.exclamationmark")
+                }
+                Toggle(isOn: $notifyMessages) {
+                    Label("Nowe wiadomości", systemImage: "envelope.badge")
+                }
+                if notifyNewGrades || notifyTimetable || notifyMessages {
                     Button {
                         Task { await NotificationManager.sendTestNotification() }
                     } label: {
@@ -63,7 +71,7 @@ struct SettingsView: View {
             } header: {
                 Text("Powiadomienia")
             } footer: {
-                Text("Eksperymentalne. iOS sam decyduje, kiedy odświeżyć aplikację w tle — dla apek sideloadowanych bywa to rzadko. Plakietka „nowe” przy ocenach działa zawsze.")
+                Text("Eksperymentalne. iOS sam decyduje, kiedy odświeżyć aplikację w tle — dla apek sideloadowanych bywa to rzadko. Plakietki „nowe” w aplikacji działają zawsze.")
             }
 
             Section {
@@ -91,20 +99,9 @@ struct SettingsView: View {
         .navigationTitle("Ustawienia")
         .navigationBarTitleDisplayMode(.inline)
         .tint(.accentColor)
-        .onChange(of: notifyNewGrades) { _, on in
-            Task {
-                if on {
-                    let granted = await NotificationManager.requestAuthorization()
-                    if granted {
-                        BackgroundRefresh.scheduleIfEnabled()
-                    } else {
-                        notifyNewGrades = false
-                    }
-                } else {
-                    BackgroundRefresh.cancel()
-                }
-            }
-        }
+        .onChange(of: notifyNewGrades) { _, on in handleToggle(on) { notifyNewGrades = false } }
+        .onChange(of: notifyTimetable) { _, on in handleToggle(on) { notifyTimetable = false } }
+        .onChange(of: notifyMessages) { _, on in handleToggle(on) { notifyMessages = false } }
         .confirmationDialog("Wylogować się?", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
             Button("Wyloguj", role: .destructive) {
                 Task { await app.logOut() }
@@ -115,5 +112,23 @@ struct SettingsView: View {
 
     private var currentLogin: String? {
         Credentials.load()?.login
+    }
+
+    /// Shared handler for the three notification toggles: ask for permission when
+    /// switching one on (revert via `revert` if denied), (re)schedule or cancel the
+    /// background task based on whether any are still on.
+    private func handleToggle(_ turnedOn: Bool, revert: @escaping () -> Void) {
+        Task {
+            if turnedOn {
+                let granted = await NotificationManager.requestAuthorization()
+                if granted {
+                    BackgroundRefresh.scheduleIfEnabled()
+                } else {
+                    revert()
+                }
+            } else if !BackgroundRefresh.anyEnabled {
+                BackgroundRefresh.cancel()
+            }
+        }
     }
 }

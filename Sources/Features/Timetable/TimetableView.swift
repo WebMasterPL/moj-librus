@@ -67,6 +67,7 @@ struct TimetableView: View {
         }
         .task(id: weekKey) { await loadIfNeeded() }
         .refreshable { await load() }
+        .onDisappear { repo.markTimetableChangesSeen() }
     }
 
     private func jumpToToday(_ proxy: ScrollViewProxy, animated: Bool) {

@@ -74,6 +74,7 @@ struct MessagesView: View {
                 await repo.loadMessages()
             }
         }
+        .onDisappear { repo.markMessagesSeen() }
     }
 }
 

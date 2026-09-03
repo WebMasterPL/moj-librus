@@ -35,6 +35,36 @@ enum NotificationManager {
         try? await UNUserNotificationCenter.current().add(request)
     }
 
+    static func notifyTimetableChanges(_ lines: [String]) async {
+        guard !lines.isEmpty, await isAuthorized() else { return }
+        let content = UNMutableNotificationContent()
+        content.title = lines.count == 1 ? "Zmiana w planie lekcji"
+                                         : "Zmiany w planie lekcji (\(lines.count))"
+        content.body = lines.prefix(4).joined(separator: "\n")
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "timetable-\(UUID().uuidString)", content: content, trigger: nil
+        )
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    static func notifyNewMessages(_ messages: [MessageItem]) async {
+        guard !messages.isEmpty, await isAuthorized() else { return }
+        let content = UNMutableNotificationContent()
+        if messages.count == 1, let m = messages.first {
+            content.title = "Nowa wiadomość"
+            content.body = "\(m.correspondent): \(m.subject.isEmpty ? "(bez tematu)" : m.subject)"
+        } else {
+            content.title = "Nowe wiadomości (\(messages.count))"
+            content.body = messages.prefix(5).map(\.correspondent).joined(separator: ", ")
+        }
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "messages-\(UUID().uuidString)", content: content, trigger: nil
+        )
+        try? await UNUserNotificationCenter.current().add(request)
+    }
+
     static func sendTestNotification() async {
         guard await isAuthorized() else { return }
         let content = UNMutableNotificationContent()

@@ -148,9 +148,36 @@ final class DataRepository {
         announcements = []; events = []; notes = []; messagesInbox = []
         bellSchedule = []; schoolName = nil
         SeenGrades.reset()
+        Seen.timetableChanges.reset()
+        Seen.messageIDs.reset()
         SharedStore.clear()
         WidgetRefresher.reload()
         timetableWeeks = [:]; lastSync = nil
+    }
+
+    // MARK: - Notification "seen" tracking
+
+    /// Signatures for every cancelled / substituted / room-changed lesson from
+    /// today onward — the unit the timetable-change notification dedupes on.
+    func upcomingChangeSignatures() -> Set<String> {
+        let today = LibrusDate.today
+        var out: Set<String> = []
+        for day in timetableWeeks.values.flatMap({ $0 }) where day.date >= today {
+            let dateKey = LibrusDate.ymdString(day.date)
+            for e in day.entries where e.isCancelled || e.isSubstitution {
+                let kind = e.isCancelled ? "C" : "S"
+                out.insert("\(dateKey)#\(e.lessonNo)#\(kind)#\(e.subject)")
+            }
+        }
+        return out
+    }
+
+    func markTimetableChangesSeen() {
+        Seen.timetableChanges.merge(upcomingChangeSignatures())
+    }
+
+    func markMessagesSeen() {
+        Seen.messageIDs.merge(Set(messagesInbox.map(\.id)))
     }
 
     // MARK: - Core refresh
@@ -319,6 +346,9 @@ final class DataRepository {
             }
             timetableWeeks[key] = days
             timetableError = nil
+            if !Seen.timetableChanges.hasBaseline {
+                Seen.timetableChanges.establishBaseline(upcomingChangeSignatures())
+            }
             saveCache()
             SharedStore.publishTimetable(upcomingDays())
             WidgetRefresher.reload()
@@ -335,6 +365,9 @@ final class DataRepository {
         do {
             let list = try await messages.inbox()
             messagesInbox = list.sorted { ($0.sentDate ?? .distantPast) > ($1.sentDate ?? .distantPast) }
+            if !Seen.messageIDs.hasBaseline {
+                Seen.messageIDs.establishBaseline(Set(list.map(\.id)))
+            }
             saveCache()
         } catch {
             handle(error, into: \.messagesError)
