@@ -4,6 +4,11 @@ enum HTTP {
     /// `application/x-www-form-urlencoded` body. Space → `+`, everything else
     /// outside the unreserved set percent-encoded.
     static func formBody(_ params: [String: String]) -> Data {
+        formBody(params.map { ($0.key, $0.value) })
+    }
+
+    /// Ordered variant — needed for forms that repeat a key (`DoKogo[]=1&DoKogo[]=2`).
+    static func formBody(_ pairs: [(String, String)]) -> Data {
         let unreserved = CharacterSet(charactersIn:
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         func enc(_ s: String) -> String {
@@ -21,8 +26,7 @@ enum HTTP {
             }
             return out
         }
-        let pairs = params.map { "\(enc($0.key))=\(enc($0.value))" }
-        return Data(pairs.joined(separator: "&").utf8)
+        return Data(pairs.map { "\(enc($0.0))=\(enc($0.1))" }.joined(separator: "&").utf8)
     }
 
     /// First capture group of `pattern` in `text`, if any.

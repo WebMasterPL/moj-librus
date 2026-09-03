@@ -3,6 +3,7 @@ import SwiftUI
 struct MessagesView: View {
     @Environment(DataRepository.self) private var repo
     @State private var didLoad = false
+    @State private var showCompose = false
 
     var body: some View {
         List {
@@ -67,6 +68,19 @@ struct MessagesView: View {
         .scrollContentBackground(.hidden)
         .background(Color.appGroupedBackground.ignoresSafeArea())
         .navigationTitle("Wiadomości")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Haptics.tap()
+                    showCompose = true
+                } label: {
+                    Label("Nowa wiadomość", systemImage: "square.and.pencil")
+                }
+            }
+        }
+        .sheet(isPresented: $showCompose) {
+            MessageComposeView().environment(repo)
+        }
         .refreshable { await repo.loadMessages() }
         .task {
             if !didLoad {

@@ -387,12 +387,28 @@ final class DataRepository {
 
     /// Sends a reply. Returns nil on success, or an error message to show the user.
     func sendReply(to recipientLoginId: String, subject: String, body: String) async -> String? {
+        await sendMessage(to: [recipientLoginId], subject: subject, body: body)
+    }
+
+    /// Sends a new message. Returns nil on success, or an error message to show.
+    func sendMessage(to recipientIDs: [String], subject: String, body: String) async -> String? {
         do {
-            try await messages.send(recipientLoginIds: [recipientLoginId], subject: subject, body: body)
+            try await messages.send(recipientLoginIds: recipientIDs, subject: subject, body: body)
             await loadMessages()
             return nil
         } catch {
             return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// People this account may write to (from the Synergia compose form).
+    /// Returns an empty list plus a message when the form can't be read.
+    func loadRecipients() async -> (people: [MessagesClient.Recipient], error: String?) {
+        do {
+            return (try await messages.recipients(), nil)
+        } catch {
+            let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return ([], text)
         }
     }
 

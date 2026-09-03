@@ -64,49 +64,125 @@ actor MessagesClient {
         let (data, _) = try await get("https://synergia.librus.pl/wiadomosci/1/5/\(messageId)/f0")
         let html = String(data: data, encoding: .utf8) ?? ""
 
-        let bodyHTML = Self.firstGroup(#"(?s)container-message-content[^>]*>(.*?)</div>"#, html)
-            ?? Self.firstGroup(#"(?s)<div[^>]*class=["'][^"']*message[^"']*content[^"']*["'][^>]*>(.*?)</div>\s*</div>"#, html)
-            ?? Self.firstGroup(#"(?s)<td[^>]*class=["'][^"']*message[^"']*["'][^>]*>(.*?)</td>"#, html)
+        // szkolny reads `.container-message-content` — grab it with nesting honoured.
+        let bodyHTML = Self.balancedDiv(after: "container-message-content", in: html)
+            ?? Self.firstGroup(#"<td[^>]*class=["'][^"']*message[^"']*["'][^>]*>(.*?)</td>"#, html)
             ?? Self.tableRegion(html)
 
         let senderId = HTTP.firstMatch(#"/wiadomosci/2/6/(\d+)"#, in: html)
         return MessageContent(text: cleanup(bodyHTML), senderLoginId: senderId)
     }
 
+    // MARK: - Composing
+
+    struct Recipient: Identifiable, Hashable, Sendable {
+        let id: String
+        let name: String
+        let group: String?
+    }
+
+    /// People this account may write to, read off the Synergia compose form.
+    func recipients() async throws -> [Recipient] {
+        try await ensureSynergiaSession()
+        let (data, _) = try await get(Self.composeURL)
+        let html = String(data: data, encoding: .utf8) ?? ""
+        let found = Self.parseRecipients(html)
+        guard !found.isEmpty else {
+            throw APIError.messageBridgeFailed(
+                "nie znalazłem listy odbiorców w formularzu · " + Self.formRegion(html))
+        }
+        return found
+    }
+
     @discardableResult
     func send(recipientLoginIds: [String], subject: String, body: String) async throws -> Int {
         try await ensureSynergiaSession()
-        guard let rid = recipientLoginIds.first, !rid.isEmpty else {
-            throw APIError.messageBridgeFailed("brak odbiorcy")
-        }
+        let ids = recipientLoginIds.filter { !$0.isEmpty }
+        guard !ids.isEmpty else { throw APIError.messageBridgeFailed("brak odbiorcy") }
 
-        let (formData, _) = try await get("https://synergia.librus.pl/wiadomosci/2/6/\(rid)")
+        let (formData, formResp) = try await get(Self.composeURL)
         let formHTML = String(data: formData, encoding: .utf8) ?? ""
 
         var fields = HTTP.hiddenInputs(in: formHTML)
-        for m in HTTP.allMatches(#"name=["'](DoKogo\[[^"']*\])["'][^>]*value=["']([^"']+)["']"#, in: formHTML)
-        where m.count > 2 {
-            fields[m[1]] = m[2]
-        }
-        if !fields.keys.contains(where: { $0.hasPrefix("DoKogo") }) {
-            fields["DoKogo[\(rid)]"] = rid
-        }
         fields["temat"] = subject
         fields["tresc"] = body
-        fields["poprzednia"] = "5"
-        fields["Wyslij"] = "Wyślij"
+        let submitName = HTTP.firstMatch(#"<input[^>]*type=["']submit["'][^>]*name=["']([^"']+)["']"#, in: formHTML)
+            ?? HTTP.firstMatch(#"<input[^>]*name=["']([^"']+)["'][^>]*type=["']submit["']"#, in: formHTML)
+        fields[submitName ?? "wyslij"] = "Wyślij"
 
-        let (respData, resp) = try await post("https://synergia.librus.pl/wiadomosci/2/6", form: fields)
+        // The recipient field repeats once per person, so the body has to be ordered.
+        let recipientField = Self.parseRecipients(formHTML).first?.group ?? "DoKogo[]"
+        let key = recipientField.hasSuffix("[]") ? recipientField : "\(recipientField)[]"
+        var pairs: [(String, String)] = ids.map { (key, $0) }
+        pairs.append(contentsOf: fields.map { ($0.key, $0.value) })
+
+        let action = HTTP.firstMatch(#"<form[^>]*action=["']([^"']*wiadomosci[^"']*)["']"#, in: formHTML)
+            .map { Self.absolute($0, base: formResp?.url) } ?? Self.composeURL
+
+        let (respData, resp) = try await post(action, pairs: pairs)
         let respHTML = String(data: respData, encoding: .utf8) ?? ""
         let finalURL = resp?.url?.absoluteString ?? ""
 
-        if finalURL.contains("/wiadomosci/5") || finalURL.hasSuffix("/wiadomosci")
-            || respHTML.range(of: #"została wysłana|wiadomość wysłana"#, options: .regularExpression) != nil {
+        if respHTML.range(of: #"(?i)(została|zostały) wysłan|wiadomość wysłana"#,
+                          options: .regularExpression) != nil
+            || (finalURL.contains("/wiadomosci") && !finalURL.contains("/2/")) {
             return 0
         }
-        let err = Self.firstGroup(#"(?s)class=["'][^"']*(?:error|red|blad|komunikat)[^"']*["'][^>]*>(.*?)<"#, respHTML)
+        let err = Self.firstGroup(#"class=["'][^"']*(?:error|red|blad|komunikat)[^"']*["'][^>]*>(.*?)<"#, respHTML)
         throw APIError.messageBridgeFailed(
-            err.map(Self.stripHTML)?.nonEmpty ?? ("wysyłka nie powiodła się · " + snippet(respHTML)))
+            err.map(Self.stripHTML)?.nonEmpty ?? ("wysyłka nie powiodła się · " + Self.formRegion(respHTML)))
+    }
+
+    private static let composeURL = "https://synergia.librus.pl/wiadomosci/2/5"
+
+    private static func absolute(_ path: String, base: URL?) -> String {
+        if path.hasPrefix("http") { return path }
+        return URL(string: path, relativeTo: base ?? URL(string: "https://synergia.librus.pl"))?
+            .absoluteString ?? composeURL
+    }
+
+    private static func parseRecipients(_ html: String) -> [Recipient] {
+        var out: [Recipient] = []
+        var seen = Set<String>()
+
+        func wanted(_ name: String) -> Bool {
+            let l = name.lowercased()
+            return l.contains("kogo") || l.contains("adresat") || l.contains("odbiorc")
+                || l.contains("receiver") || l.contains("nauczyciel")
+        }
+
+        // Checkbox list: <input type="checkbox" name="DoKogo[]" value="123"> Nazwisko Imię (Rola)
+        for m in HTTP.allMatches(#"<input([^>]*type=["']checkbox["'][^>]*)>([^<]{0,90})"#, in: html)
+        where m.count > 2 {
+            let tag = m[1]
+            guard let name = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: tag), wanted(name),
+                  let value = HTTP.firstMatch(#"value=["']([^"']+)["']"#, in: tag),
+                  value != "0", seen.insert(value).inserted else { continue }
+            let label = stripHTML(m[2]).nonEmpty ?? value
+            out.append(Recipient(id: value, name: label, group: name))
+        }
+
+        // <select name="DoKogo"><option value="123">Nazwisko Imię</option>
+        for sm in HTTP.allMatches(#"<select([^>]*)>(.*?)</select>"#, in: html) where sm.count > 2 {
+            guard let selName = HTTP.firstMatch(#"name=["']([^"']+)["']"#, in: sm[1]),
+                  wanted(selName) else { continue }
+            for om in HTTP.allMatches(#"<option[^>]*value=["']([^"']+)["'][^>]*>(.*?)</option>"#, in: sm[2])
+            where om.count > 2 {
+                let value = om[1]
+                let label = stripHTML(om[2])
+                guard value != "0", !label.isEmpty, seen.insert(value).inserted else { continue }
+                out.append(Recipient(id: value, name: label, group: selName))
+            }
+        }
+        return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Whitespace-collapsed slice of the compose form, for remote debugging.
+    private static func formRegion(_ html: String) -> String {
+        let anchor = html.range(of: "<form")?.lowerBound ?? html.startIndex
+        let end = html.index(anchor, offsetBy: 1200, limitedBy: html.endIndex) ?? html.endIndex
+        return String(html[anchor..<end])
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
     // MARK: - Deep diagnostic
@@ -211,7 +287,7 @@ actor MessagesClient {
         }
     }
 
-    private func post(_ urlString: String, form: [String: String]) async throws -> (Data, HTTPURLResponse?) {
+    private func post(_ urlString: String, pairs: [(String, String)]) async throws -> (Data, HTTPURLResponse?) {
         guard let url = URL(string: urlString) else {
             throw APIError.messageBridgeFailed("zły adres: \(urlString)")
         }
@@ -220,7 +296,7 @@ actor MessagesClient {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue(Librus.browserUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("https://synergia.librus.pl/wiadomosci", forHTTPHeaderField: "Referer")
-        request.httpBody = HTTP.formBody(form)
+        request.httpBody = HTTP.formBody(pairs)
         do {
             let (data, resp) = try await http.data(for: request)
             return (data, resp as? HTTPURLResponse)
@@ -231,40 +307,61 @@ actor MessagesClient {
 
     // MARK: - HTML parsing
 
+    /// Layout confirmed against szkolny.eu's Synergia parser:
+    /// `table.decorated.stretch tbody > tr`, cells
+    /// `[0]=checkbox [1]=attachment icon [2]=sender [3]=subject [4]=ISO date`,
+    /// and a message counts as **read** when cell 2 carries no `style` attribute
+    /// (Librus bolds unread rows inline).
     private static func parseMessageList(_ html: String) -> [MessageItem] {
+        let scope = tableScope(html) ?? html
         var out: [MessageItem] = []
         var seen = Set<Int>()
 
-        for m in HTTP.allMatches(#"(?s)<tr[^>]*>(.*?)</tr>"#, in: html) {
+        for m in HTTP.allMatches(#"<tr[^>]*>(.*?)</tr>"#, in: scope) {
             guard m.count > 1 else { continue }
             let row = m[1]
-            guard let idStr = HTTP.firstMatch(#"/wiadomosci/1/5/(\d+)"#, in: row),
+            guard let idStr = HTTP.firstMatch(#"/wiadomosci/[0-9]+/[0-9]+/([0-9]+?)/"#, in: row),
                   let id = Int(idStr), seen.insert(id).inserted else { continue }
 
-            let cells = HTTP.allMatches(#"(?s)<td[^>]*>(.*?)</td>"#, in: row)
-                .compactMap { $0.count > 1 ? stripHTML($0[1]) : nil }
-
-            let subject = HTTP.firstMatch(#"(?s)<a[^>]+/wiadomosci/1/5/\d+[^>]*>(.*?)</a>"#, in: row)
-                .map(stripHTML)?.nonEmpty ?? "(bez tematu)"
-
-            let dateIdx = cells.firstIndex {
-                $0.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression) != nil
-            }
-            let dateStr = dateIdx.map { cells[$0] }
+            let cellMatches = HTTP.allMatches(#"<td([^>]*)>(.*?)</td>"#, in: row)
+            let attrs = cellMatches.map { $0.count > 1 ? $0[1] : "" }
+            let raw = cellMatches.map { $0.count > 2 ? $0[2] : "" }
+            let text = raw.map(stripHTML)
 
             var sender = "Librus"
-            if let di = dateIdx, di > 0 {
-                for i in stride(from: di - 1, through: 0, by: -1) where cells[i].count > 1 && cells[i] != subject {
-                    sender = cells[i]; break
-                }
-            } else if let s = cells.first(where: { $0.count > 1 && $0 != subject }) {
-                sender = s
-            }
+            var subject = "(bez tematu)"
+            var dateStr: String?
+            var unread = false
+            var attach = false
 
-            let unread = row.range(of: #"(?i)font-weight:\s*bold|class=["'][^"']*bold|nieczytan|<strong|<b>"#,
+            if text.count >= 5 {
+                sender = text[2].split(separator: "(").first
+                    .map { String($0).trimmingCharacters(in: .whitespaces) }?.nonEmpty ?? text[2]
+                subject = text[3].nonEmpty ?? subject
+                dateStr = text[4]
+                let style = HTTP.firstMatch(#"style=["']([^"']*)["']"#, in: attrs[2]) ?? ""
+                unread = !style.trimmingCharacters(in: .whitespaces).isEmpty
+                attach = raw[1].range(of: "<img", options: .caseInsensitive) != nil
+            } else {
+                // Fallback for a different column layout.
+                subject = HTTP.firstMatch(#"<a[^>]+/wiadomosci/[0-9]+/[0-9]+/\d+[^>]*>(.*?)</a>"#, in: row)
+                    .map(stripHTML)?.nonEmpty ?? subject
+                let dateIdx = text.firstIndex {
+                    $0.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression) != nil
+                }
+                dateStr = dateIdx.map { text[$0] }
+                if let di = dateIdx, di > 0 {
+                    for i in stride(from: di - 1, through: 0, by: -1)
+                    where text[i].count > 1 && text[i] != subject {
+                        sender = text[i]; break
+                    }
+                } else if let s = text.first(where: { $0.count > 1 && $0 != subject }) {
+                    sender = s
+                }
+                unread = row.range(of: #"(?i)font-weight:\s*bold|<strong|<b>"#,
                                    options: .regularExpression) != nil
-            let attach = row.range(of: #"(?i)zalacznik|attachment|spinacz|clip\.|paperclip"#,
-                                   options: .regularExpression) != nil
+                attach = row.range(of: #"(?i)zalacznik|spinacz|<img"#, options: .regularExpression) != nil
+            }
 
             let date = LibrusDate.fromISO(dateStr)
             out.append(MessageItem(
@@ -278,6 +375,38 @@ actor MessagesClient {
             ))
         }
         return out
+    }
+
+    /// Narrow to the `decorated stretch` message table so page chrome can't
+    /// contribute stray `<tr>`s.
+    private static func tableScope(_ html: String) -> String? {
+        guard let r = html.range(of: #"<table[^>]*class=["'][^"']*decorated[^"']*stretch"#,
+                                 options: [.regularExpression, .caseInsensitive]) else { return nil }
+        let after = html[r.lowerBound...]
+        guard let end = after.range(of: "</table>") else { return String(after) }
+        return String(after[..<end.upperBound])
+    }
+
+    /// Contents of the element opened at `marker`, honouring nested `<div>`s.
+    private static func balancedDiv(after marker: String, in html: String) -> String? {
+        guard let mr = html.range(of: marker),
+              let gt = html[mr.upperBound...].firstIndex(of: ">") else { return nil }
+        let start = html.index(after: gt)
+        var i = start
+        var depth = 1
+        while i < html.endIndex {
+            if html[i] == "<" {
+                let rest = html[i...]
+                if rest.hasPrefix("</div") {
+                    depth -= 1
+                    if depth == 0 { return String(html[start..<i]) }
+                } else if rest.hasPrefix("<div") {
+                    depth += 1
+                }
+            }
+            i = html.index(after: i)
+        }
+        return String(html[start...])
     }
 
     /// ~900 chars of the HTML around the first message link (or the first table),
